@@ -4,6 +4,8 @@ Share your screen, window or browser tab through a private link. Viewers join in
 
 A single Go binary embeds the web app and WebRTC SFU. Media always passes through the server, with bounded queues for each viewer. The sender verifies PINs locally using CPace; media uses SFrame end-to-end encryption. Unsupported browsers fail closed.
 
+**Branch: unfinished controller development.** This branch preserves the latest controller and simulator work. It is not approved for release. The last full comparison passed 24/37 properties; the latest correction still fails two selected regressions.
+
 **Status: pre-release.** Encryption is labelled beta, and reliability testing is still in progress. Bad-network quality gates and physical mobile validation are not complete. This is a development snapshot, not a production-ready release.
 
 ## Build

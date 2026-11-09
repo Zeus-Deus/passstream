@@ -30,7 +30,7 @@ func heartbeatPayload(message map[string]any, full bool) []byte {
 	}
 	if !full && (err != nil || len(b) > 900) {
 		core := map[string]any{}
-		for _, key := range []string{"wireBytes", "paddingBytes", "initialRTTMs", "decoderReported", "freshFrames", "freshAgeMs", "catchupMs", "keyframeBytes", "sourceKeyframeBytes", "fullLayerTimestamps", "pacerDrops", "wireBudget", "publisherBudget", "publisherQueueMs", "publisherReceivedWireRate"} {
+		for _, key := range []string{"wireBytes", "paddingBytes", "initialRTTMs", "decoderReported", "freshFrames", "freshAgeMs", "catchupMs", "keyframeBytes", "sourceKeyframeBytes", "fullLayerTimestamps", "fullLayerFirst", "uniqueMedia", "offeredMedia", "pacerDrops", "wireBudget", "publisherBudget", "audio"} {
 			if value, ok := extra[key]; ok {
 				core[key] = value
 			}
@@ -52,24 +52,6 @@ func (p *Peer) acceptHeartbeat(now time.Time) bool {
 		}
 		next := max(previous, now.UnixNano()) + period
 		if p.heartbeatAcceptedAt.CompareAndSwap(previous, next) {
-			return true
-		}
-	}
-}
-
-// One non-join native key per ten seconds per viewer: a one-second key can
-// consume at most ten percent of its shared publisher's time. All non-join
-// callers enter here, including upgrades and untrusted decoded-stall claims.
-func (p *Peer) takeNativeKey(now time.Time) bool {
-	at := &p.nativeKeyAt
-	if p.nativeKeyOwner != nil {
-		at = p.nativeKeyOwner
-	}
-	for previous := at.Load(); ; previous = at.Load() {
-		if previous > 0 && now.UnixNano()-previous < int64(10*time.Second) {
-			return false
-		}
-		if at.CompareAndSwap(previous, now.UnixNano()) {
 			return true
 		}
 	}

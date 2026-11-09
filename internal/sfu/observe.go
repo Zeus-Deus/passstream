@@ -20,23 +20,29 @@ func (p *Peer) observe(hidden *bool) {
 }
 
 // pliPermitted applies the server's per-viewer PLI limit to keyframe
-// requests that a viewer originates. The SFU's own recovery requests bypass it.
+// requests that a viewer originates.
 func (p *Peer) pliPermitted() bool {
 	p.observerMu.RLock()
 	f := p.pliAllowed
 	p.observerMu.RUnlock()
 	return f == nil || f()
 }
-func (p *Peer) requestPLI() {
-	p.requestKeyframe()
+
+// requestKeyframe handles a viewer's PLI, FIR or keyframe heartbeat: an
+// untrusted decoder report that only ctrl's key policy may act on.
+func (p *Peer) requestKeyframe() {
+	if !p.pliPermitted() || p.view == nil {
+		return
+	}
+	p.view.stall(time.Now())
 }
 
-// ObservedStats uses receiver reports and actual bytes written by the pacer.
+// ObservedStats uses receiver reports and the bytes actually written.
 func (p *Peer) ObservedStats() (rtt, loss float64, wire uint64, ready bool) {
 	rtt = float64(p.rttNanos.Load()) / 1e6
 	loss = float64(p.residualLoss.Load()) * 100 / 256
-	if p.Pacer != nil {
-		wire = p.Pacer.wireBytes.Load()
+	if p.view != nil {
+		wire = p.view.wireBytes.Load()
 	}
 	ready = p.reports.Load() > 0
 	return
@@ -45,19 +51,19 @@ func (p *Peer) ObservedStats() (rtt, loss float64, wire uint64, ready bool) {
 // Age is how long ago the peer was created.
 func (p *Peer) Age() time.Duration { return time.Since(p.born) }
 
-// RefreshTransitMS is an advisory for an admitted key and its dependent frames.
-// It does not extend the controller's bounded serialization envelope.
+// RefreshTransitMS is an advisory for an admitted key and the pictures
+// queued behind it, bounded by the key envelope.
 func (p *Peer) RefreshTransitMS() int64 {
-	if p.Publish || p.Pacer == nil {
+	if p.Publish || p.view == nil {
 		return 0
 	}
-	return min(maxKeyframeCatchup, p.Pacer.CatchupDelay(time.Now())).Milliseconds()
+	return p.view.keyTransit(time.Now()).Milliseconds()
 }
 
-// AppliedWireRate reports the actual shared wire budget, including proof caps.
+// AppliedWireRate reports the viewer's current controller rate R.
 func (p *Peer) AppliedWireRate() int64 {
-	if p.Pacer == nil {
+	if p.view == nil {
 		return 0
 	}
-	return p.Pacer.wireRate(time.Now())
+	return int64(p.view.rate(time.Now()))
 }
