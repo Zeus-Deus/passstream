@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": [
+      "vite/client"
+    ],
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@passstream/e2ee": [
+        "../e2ee/src/index.ts"
+      ],
+      "@passstream/e2ee/transform-worker": [
+        "../e2ee/src/transform-worker.ts"
+      ]
+    }
+  },
+  "include": [
+    "src"
+  ]
+}

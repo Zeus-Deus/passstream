@@ -1,0 +1,29 @@
+{
+  "name": "@passstream/e2ee",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PassStream end-to-end encryption core: CPace PIN admission, SFrame (RFC 9605) media encryption, epochs and rekey.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=26"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./transform-worker": "./src/transform-worker.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "bench": "vitest run test/throughput.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

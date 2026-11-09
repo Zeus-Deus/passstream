@@ -1,0 +1,16 @@
+# PassStream host daemon: systemd holds both listeners, so 127.0.0.1:47823
+# stays reserved for this user while the daemon crashes, restarts or exits
+# when idle (HOST-CONTROL §2.2). Installed by `passstream host install-units`.
+[Unit]
+Description=PassStream host daemon sockets (sender origin and control socket)
+
+[Socket]
+ListenStream=127.0.0.1:47823
+ListenStream=%t/passstream/host.sock
+SocketMode=0600
+DirectoryMode=0700
+Accept=no
+Service=passstream-host.service
+
+[Install]
+WantedBy=sockets.target

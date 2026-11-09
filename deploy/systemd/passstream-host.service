@@ -1,0 +1,13 @@
+# Started on demand by passstream-host.socket. KillMode=process: the sender
+# browser runs in its own transient unit and survives a daemon restart.
+[Unit]
+Description=PassStream host daemon
+Requires=passstream-host.socket
+After=passstream-host.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/passstream host
+KillMode=process
+Restart=on-failure
+RestartSec=1
