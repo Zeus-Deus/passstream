@@ -13,6 +13,7 @@ describe("remoteAllowed: the dashboard may only tighten", () => {
     ["knock.deny", { knock_id: "k" }],
     ["ban", { connection_id: "c_x" }],
     ["mode", { mode: "motion" }],
+    ["safe", { on: true }],
   ])("allows %s %j", (op, args) => expect(remoteAllowed(op, args)).toBe(true));
 
   it.each([
@@ -22,6 +23,9 @@ describe("remoteAllowed: the dashboard may only tighten", () => {
     ["pin.set", { pin: { kind: "none" } }],
     ["knock.approve", { knock_id: "k", row_code: "K7P" }],
     ["lock", { locked: false }],
+    ["safe", { on: false }],
+    ["safe", {}],
+    ["safe", { on: true, extra: 1 }],
     ["kick", { admission_id: "a", rotate_pin: true }],
     ["pause", { extra: 1 }],
   ])("refuses %s %j", (op, args) => expect(remoteAllowed(op, args)).toBe(false));

@@ -53,7 +53,7 @@ export interface SenderConfig {
   signalUrl: string;
   serverUrl: string;
   /** Used only to create the recovery record on a first launch. */
-  policy: { pin_policy: PinPolicy; pin: string | null; knock: boolean; mode: "text" | "motion" };
+  policy: { pin_policy: PinPolicy; pin: string | null; knock: boolean; mode: "text" | "motion"; safe?: boolean };
   latches: Latches;
   /** False when the record must already exist (an attachment-key init). */
   mayCreate: boolean;
@@ -91,6 +91,10 @@ export class SenderCore {
   readonly instance = id22();
   phase: Phase = "starting";
   mode: "text" | "motion";
+  /** Safe mode (FEATURES.md "Safe mode"): redact sensitive data before encoding. On unless turned off locally. */
+  safe: boolean;
+  /** Called after every safe mode change, with the new value; the redaction engine hooks in here. */
+  onSafeChange?: (on: boolean) => void;
   recovery!: HostRecovery;
   session?: Session;
   capture: MediaStream | null = null;
@@ -141,6 +145,7 @@ export class SenderCore {
 
   private constructor(readonly cfg: SenderConfig) {
     this.mode = cfg.policy.mode;
+    this.safe = cfg.policy.safe ?? true;
     this.alerts = new AlertBatcher({
       onFlush: (b) => {
         if (b.failures > 0) this.alert({ kind: "failed_pin", count: b.failures, sources: b.sources, from_at: b.firstAt, to_at: b.lastAt });
@@ -637,6 +642,12 @@ export class SenderCore {
         await this.session?.mode(this.mode === "motion");
         this.changed();
         return { ok: true, data: {} };
+      case "safe":
+        // Turning safe mode off is permissive: checkRemote refuses it from the server.
+        this.safe = args.on === true;
+        this.onSafeChange?.(this.safe);
+        this.changed();
+        return { ok: true, data: {} };
       case "lock":
         await this.latch("locked", args.locked as boolean, pageOriginated);
         return { ok: true, data: {} };
@@ -766,6 +777,7 @@ export class SenderCore {
       seq: ++this.seq,
       phase: this.phase,
       mode: this.mode,
+      safe: this.safe,
       e2ee: { status: "beta", epoch: this.host.keys.activeEpoch, suspended: this.host.keys.suspended, revocation_not_durable: this.host.revocationNotDurable },
       access: {
         pin: { required: policy.kind !== "none", kind: policy.kind, length: policy.kind === "digits" ? policy.length : null },
