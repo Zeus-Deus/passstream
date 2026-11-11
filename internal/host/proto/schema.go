@@ -340,6 +340,7 @@ var SenderStateV = Obj(
 	Req("phase", EnumOrUnknown("starting", "picking", "live", "paused", "ended")),
 	Opt("end_reason", EnumOrUnknown("stopped", "window_closed", "expired", "deleted", "state_lost", "browser_failed")),
 	Req("mode", EnumOrUnknown("text", "motion")),
+	Req("safe", Bool),
 	Req("e2ee", E2EEV),
 	Req("access", AccessV),
 	Req("admissions", Arr(500, Obj(Req("admission_id", VId22), Req("viewer_id", VId22), Req("row_code", VRowCode),

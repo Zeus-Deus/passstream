@@ -112,6 +112,7 @@ type opts struct {
 	knock     bool
 	label     *string
 	mode      string
+	noSafe    bool
 	lock      bool
 	rotatePin bool
 	keepPin   bool
@@ -187,6 +188,8 @@ func parse(args []string) (*opts, error) {
 			o.actionID = v
 		case "--motion":
 			o.mode = "motion"
+		case "--no-safe":
+			err = boolFlag(&o.noSafe)
 		case "--pin":
 			v, e := next()
 			if e != nil {
@@ -274,8 +277,9 @@ func NormalizeCode(s string) (string, bool) {
 const help = `passstream: private live screen sharing (local commands talk to the host daemon)
 
   passstream share [--pin 4|6|none|passphrase] [--pin-stdin|--pin-fd N] [--knock]
-                   [--label L] [--motion] [--no-wait] [--timeout 120s] [--json]
+                   [--label L] [--motion] [--no-safe] [--no-wait] [--timeout 120s] [--json]
   passstream stop | pause | resume | lock | unlock
+  passstream safe on|off              (redact sensitive data; on by default)
   passstream curtain on|off           (privacy curtain: the pause latch)
   passstream annotations on|off|clear (viewers may draw; host-only by default)
   passstream unfreeze [--keep-pin] [--pin-stdin|--pin-fd N] [--wait]
@@ -499,6 +503,15 @@ func run(cmd string, o *opts, env *Env) error {
 			return usage("mode is text or motion")
 		}
 		p.op, p.args = "mode", map[string]any{"mode": o.pos[0]}
+	case "safe":
+		// Safe mode on is restrictive (allowed from anywhere); off is local only.
+		if err := wantPos(o, 1, "on or off"); err != nil {
+			return err
+		}
+		if o.pos[0] != "on" && o.pos[0] != "off" {
+			return usage("safe is on or off")
+		}
+		p.op, p.args = "safe", map[string]any{"on": o.pos[0] == "on"}
 	case "unfreeze":
 		if err := wantPos(o, 0, "no arguments"); err != nil {
 			return err
@@ -885,6 +898,9 @@ func share(o *opts, env *Env) error {
 	}
 	if o.mode != "" {
 		args["mode"] = o.mode
+	}
+	if o.noSafe {
+		args["safe"] = false
 	}
 	if o.pinPolicy != nil {
 		pol := map[string]any{"kind": o.pinPolicy.Kind}

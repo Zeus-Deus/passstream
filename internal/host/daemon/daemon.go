@@ -331,12 +331,13 @@ func (d *Daemon) streamStatusLocked() *proto.StreamStatus {
 	}
 	s := &proto.StreamStatus{
 		ID: st.rec.StreamID, Label: st.rec.Label, Phase: "starting", Attachment: st.attachmentName(),
-		Mode: st.rec.Mode, StartedAt: st.rec.StartedAt, LiveAt: st.rec.LiveAt, Viewers: []proto.Viewer{},
+		Mode: st.rec.Mode, Safe: st.rec.Safe, StartedAt: st.rec.StartedAt, LiveAt: st.rec.LiveAt, Viewers: []proto.Viewer{},
 		HasLink: st.secrets.have,
 	}
 	if ss := st.state; ss != nil {
 		s.Phase = ss.Phase
 		s.Mode = ss.Mode
+		s.Safe = ss.Safe
 		acc := ss.Access
 		// The daemon's own latches only as they're on disk: a latch whose
 		// write failed was refused to its caller (HOST-CONTROL §5.6).

@@ -202,6 +202,7 @@ SenderState {
   phase: "starting" | "picking" | "live" | "paused" | "ended"
   end_reason?: "stopped" | "window_closed" | "expired" | "deleted" | "state_lost" | "browser_failed" | "unknown"
   mode: "text" | "motion"
+  safe: bool                      // safe mode: sensitive data is redacted before encoding
   e2ee: { status: "beta" | "on", epoch: uint, suspended: bool, revocation_not_durable: bool }
   access: Access
   admissions: Admission[]         // ≤ 500
@@ -339,7 +340,7 @@ Stream {
   e2ee: bool
   sender: { online: bool, kind: "local" | "browser" | "whip", last_seen_at: Ms | null }
   declared: { pin: PinPolicy, knock: bool }   // fixed at creation; informational
-  effective: { phase, mode, access: Access, e2ee, health: Health | null } | null   // from the last SenderState; null before it
+  effective: { phase, mode, safe, access: Access, e2ee, health: Health | null } | null   // from the last SenderState; null before it
   watching: uint
   knocking: uint
 }
@@ -610,13 +611,14 @@ The server sees these as opaque `e2ee` envelopes. Knocks are visible to it only 
 | `stop` | `{}` | `{}` |
 | `pause` | `{}` | `{}` |
 | `mode` | `{mode: "text" \| "motion"}` | `{}` |
+| `safe` | `{on: true}` | `{}`. Turns safe mode on (FEATURES.md "Safe mode"). |
 | `lock` | `{locked: true}` | `{}` |
 | `kick` | `{admission_id: Id22, lock?: bool = false}` | `{admission_ids: Id22[], locked: bool}` |
 | `knock.deny` | `{knock_id: Id22}` | `{}` |
 | `annotations` | `{viewers: false}` | `{viewers: false}`. Viewers may no longer draw (the default). |
 | `annotations.clear` | `{}` | `{}`. Clears every annotation on every overlay. |
 
-- `lock {locked: false}`, `annotations {viewers: true}`, any other op, or a local-only argument (`rotate_pin`, `pin`, `keep_pin`, `row_code`, `policy`) → `local_owner_required`, and **nothing is applied**.
+- `lock {locked: false}`, `annotations {viewers: true}`, `safe {on: false}`, any other op, or a local-only argument (`rotate_pin`, `pin`, `keep_pin`, `row_code`, `policy`) → `local_owner_required`, and **nothing is applied**.
 - Any other unknown argument → `invalid_argument`.
 - `kick` with `lock: true` sets the lock latch before it awaits the kick. A failed kick returns its error with `details: {locked: true}`.
 - `id` is the server's forwarding id (§9.6). The sender caches only terminal results of the last 256 ids per page instance; a repeated id with the same op and arguments shares the in-flight or terminal result. Storage, internal and rotation-pending errors may be retried with the same id; accepted writes must be watched rather than resubmitted (§9.6).
@@ -689,9 +691,9 @@ Command {
 | `op` | `args` | `result` |
 |---|---|---|
 | `stop` | `{}` | `{}`. Same as `DELETE`; works while the sender is offline. |
-| `pause`, `mode`, `lock`, `kick`, `knock.deny`, `annotations`, `annotations.clear` | As in §8.5 | As in §8.5 |
+| `pause`, `mode`, `safe`, `lock`, `kick`, `knock.deny`, `annotations`, `annotations.clear` | As in §8.5 | As in §8.5 |
 | `ban` | `{connection_id: ConnId}` | `{ip_banned: true, admission_ids: Id22[]}`. The server bans the IP for this stream, then sends `kick` for the admissions it attributes to that connection. |
-| `resume`, `unfreeze`, `pin.rotate`, `pin.set`, `knock.approve`, `lock {locked: false}`, `annotations {viewers: true}` | — | `403 local_owner_required` |
+| `resume`, `unfreeze`, `pin.rotate`, `pin.set`, `knock.approve`, `lock {locked: false}`, `annotations {viewers: true}`, `safe {on: false}` | — | `403 local_owner_required` |
 
 **Idempotency.**
 
@@ -752,6 +754,7 @@ Remote command inventory (tightening/neutral, authorized key or dashboard sessio
 - HTTP command `stop`
 - HTTP command `pause`
 - HTTP command `mode`
+- HTTP command `safe`
 - HTTP command `lock`
 - HTTP command `kick`
 - HTTP command `knock.deny`
@@ -759,7 +762,7 @@ Remote command inventory (tightening/neutral, authorized key or dashboard sessio
 - HTTP command `annotations.clear`
 - HTTP command `ban`
 
-Loosening commands (`resume`, unlock via `lock {locked:false}`, `unfreeze`, `pin.rotate`, `pin.set`, `knock.approve`, viewer drawing on via `annotations {viewers:true}`) and any local-only argument return `403 local_owner_required` from HTTP, including loopback callers and owner keys. Tightening commands are allowed from any channel with that channel's authentication.
+Loosening commands (`resume`, unlock via `lock {locked:false}`, `unfreeze`, `pin.rotate`, `pin.set`, `knock.approve`, viewer drawing on via `annotations {viewers:true}`, safe mode off via `safe {on:false}`) and any local-only argument return `403 local_owner_required` from HTTP, including loopback callers and owner keys. Tightening commands are allowed from any channel with that channel's authentication.
 
 ## 10. Local daemon socket (plugin, CLI)
 
@@ -778,9 +781,10 @@ Loosening commands (`resume`, unlock via `lock {locked:false}`, `unfreeze`, `pin
 |---|---|---|
 | `status` | `{}` | `HostStatus` |
 | `subscribe` | `{}` | `{}`, then events |
-| `start` | `{pin_policy?: PinPolicy, pin?: string, knock?: bool = false, label?: string \| null = null, mode?: "text" \| "motion" = "text"}` | `{stream_id}`. `pin_policy` present means an explicit choice. `pin` is allowed only with `pin_policy` (and required for `passphrase`). |
+| `start` | `{pin_policy?: PinPolicy, pin?: string, knock?: bool = false, label?: string \| null = null, mode?: "text" \| "motion" = "text", safe?: bool = true}` | `{stream_id}`. `pin_policy` present means an explicit choice. `pin` is allowed only with `pin_policy` (and required for `passphrase`). `safe: false` starts with safe mode off. |
 | `stop`, `pause`, `resume` | `{}` | `{}` |
 | `mode` | `{mode}` | `{}` |
+| `safe` | `{on: bool}` | `{}`. Safe mode on or off. Off is local only: the server can't send it (§8.5). Not a latch; the daemon mirrors it from `SenderState.safe`. |
 | `lock` | `{locked: bool}` | `{}` |
 | `unfreeze` | `{keep_pin?: bool = false, pin?: string, action_id?: string}` | `{}`. Without `keep_pin` it rotates (sender-generated unless `pin`). |
 | `kick` | `{admission_id: Id22, lock?: bool = false, rotate_pin?: bool = false, pin?: string, action_id?: string}` | `{admission_ids, locked: bool}`. `pin` only with `rotate_pin`. |
@@ -826,6 +830,7 @@ HostStatus {
     phase: "starting" | "picking" | "live" | "paused" | "ended"   // "starting" until the page attaches
     attachment: "launching" | "attached" | "detached"
     mode: "text" | "motion"
+    safe: bool
     started_at: Ms
     live_at: Ms | null
     access: Access | null         // null until the first SenderState
@@ -993,7 +998,7 @@ The daemon checks the full-tuple peer uid (where available), `Host: 127.0.0.1:47
 
 | Direction | Message |
 |---|---|
-| daemon → page | `{"type": "command", "id": string, "op": string, "args": object}`: the §10 ops `stop`, `pause`, `resume`, `mode`, `lock`, `unfreeze`, `kick`, `pin.rotate`, `pin.set`, `knock.approve`, `knock.deny`, `annotations`, `annotations.clear`, plus `record.start`, `record.stop`, `record.status`, with the same closed args (excluding daemon-only `action_id`) |
+| daemon → page | `{"type": "command", "id": string, "op": string, "args": object}`: the §10 ops `stop`, `pause`, `resume`, `mode`, `safe`, `lock`, `unfreeze`, `kick`, `pin.rotate`, `pin.set`, `knock.approve`, `knock.deny`, `annotations`, `annotations.clear`, plus `record.start`, `record.stop`, `record.status`, with the same closed args (excluding daemon-only `action_id`) |
 | page → daemon | `{"type": "result", "id": string, "ok": true, "data": object}` or `{"type": "result", "id": string, "ok": false, "error": Error}` |
 | daemon → page | `{"type":"capture_demand","until":Ms}`: snapshot demand lease, bounded locally; zero/expired disables and erases feed state. |
 | daemon → page | `{"type":"publish_prompt","request":{request_id,kind,service,destination,bytes,duration_ms,preview,expires_at}}` or `request:null`. Preview is base64 PNG of the immutable selected snapshot. |
@@ -1021,7 +1026,7 @@ Init {
   server_url: string
   signal_url: string                    // wss://…/signal, derived from server_url
   stream: { id: StreamId, publish_token: Token43, view_link_base: string }
-  policy: { pin_policy: PinPolicy, pin: string | null, knock: bool, mode: "text" | "motion" }
+  policy: { pin_policy: PinPolicy, pin: string | null, knock: bool, mode: "text" | "motion", safe: bool }
   latches: Latches                      // the daemon's mirror
   active_stream_ids: StreamId[]
 }
@@ -1049,7 +1054,7 @@ Init {
 ## 12. Shell IPC and CLI
 
 - `omarchy-shell passstream start|stop|pause|resume|togglePause|curtain|curtainOff|lock|status`. `curtain` and `curtainOff` are the privacy curtain: the pause latch. No default keybind; the plugin README documents an example bind. `status` prints `{"live": bool, "phase", "watching", "knocking", "latches", "pin": {"required", "kind", "length"}, "error": ""}`.
-- `passstream <command> [--json]`, for local agents (HOST-CONTROL §8.1). Each command maps to one §10 op. `curtain on|off` is `pause` / `resume` (the privacy curtain is the pause latch: on is allowed from anywhere, off only locally). `annotations on|off|clear` is `annotations {viewers}` / `annotations.clear`.
+- `passstream <command> [--json]`, for local agents (HOST-CONTROL §8.1). Each command maps to one §10 op. `curtain on|off` is `pause` / `resume` (the privacy curtain is the pause latch: on is allowed from anywhere, off only locally). `annotations on|off|clear` is `annotations {viewers}` / `annotations.clear`. `safe on|off` is `safe {on}` (on is allowed from anywhere, off only locally); `share --no-safe` starts with safe mode off.
 - **Secrets never in argv.** `--pin 4|6|none|passphrase` names a policy. A value (an explicit digit PIN or a passphrase) comes from:
   - a no-echo prompt when stdin is a TTY;
   - `--pin-stdin` (one line, the trailing newline stripped);
@@ -1092,7 +1097,7 @@ recording/publishing is never started by a remote agent or viewer.
 
 ### 12.2 Public CLI command inventory
 
-The following are top-level commands. `start` is an alias for `share`; `serve` runs the server and `host` runs the daemon (and `host install-units`). `help`, `--help` and `-h` print usage without connecting. `mode text|motion` changes quality only. Other arguments and secret-input rules are above.
+The following are top-level commands. `start` is an alias for `share`; `serve` runs the server and `host` runs the daemon (and `host install-units`). `help`, `--help` and `-h` print usage without connecting. `mode text|motion` changes quality only. `safe on|off` turns safe mode on or off. Other arguments and secret-input rules are above.
 
 - CLI command `serve`
 - CLI command `host`
@@ -1108,6 +1113,7 @@ The following are top-level commands. `start` is an alias for `share`; `serve` r
 - CLI command `link`
 - CLI command `shutdown`
 - CLI command `mode`
+- CLI command `safe`
 - CLI command `curtain`
 - CLI command `annotations`
 - CLI command `unfreeze`
@@ -1127,7 +1133,7 @@ The following are top-level commands. `start` is an alias for `share`; `serve` r
 1. **Never decide who someone is from relay metadata.** `connections[*]` (IP, geo, ASN, device, User-Agent, path, timing) and `reported` (label, tab hidden) are server-observed or viewer-reported and can be swapped consistently by the server. Don't approve, kick, ban or otherwise pick a person from them. Show them to a human, or alert a human about anomalies. Only a human confirming a viewer's **row code** out-of-band identifies a row.
 2. Act on rows by `admission_ids[0]` or `knock_id`, never by `connection_id` (except `ban`), label or IP.
 3. Send an `id` with every command and retry with the same `id`. On `504`, re-read the state before deciding anything new.
-4. Permissive ops (resume or curtain off, unlock, unfreeze, approve, any PIN change, letting viewers draw) work only through the local `passstream` CLI on the host. `403 local_owner_required` isn't something to work around.
+4. Permissive ops (resume or curtain off, unlock, unfreeze, approve, any PIN change, letting viewers draw, safe mode off) work only through the local `passstream` CLI on the host. `403 local_owner_required` isn't something to work around.
 5. Never put a PIN or passphrase in argv; use `--pin-stdin` or `--pin-fd`. Never log, echo or store the PIN or the link beyond the task.
 6. Plaintext frames and publishing exist only on the owner's authenticated local API (§10.1). Remote agents must admit through the viewer page; the server cannot supply frames. An agent may request publishing only when the owner asked for it in the current
 task. The owner always confirms on screen in the local sender window; an agent

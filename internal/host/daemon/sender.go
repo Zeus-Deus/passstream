@@ -372,7 +372,7 @@ func (d *Daemon) initLocked(st *stream, attach *state.Attachment) map[string]any
 		"signal_url": serverapi.SignalURL(st.rec.ServerURL),
 		"stream":     map[string]any{"id": st.rec.StreamID, "publish_token": st.rec.PublishToken, "view_link_base": st.rec.ViewLinkBase},
 		"policy": map[string]any{"pin_policy": st.rec.Policy, "pin": st.explicitPin, "knock": st.rec.Knock,
-			"mode": st.rec.Mode},
+			"mode": st.rec.Mode, "safe": st.rec.Safe},
 		"latches":           st.rec.Latches,
 		"active_stream_ids": []string{st.rec.StreamID},
 	}
@@ -608,6 +608,10 @@ func (d *Daemon) onState(st *stream, p *pageConn, raw any) {
 			st.rec.Mode = s.Mode
 			dirty = true
 		}
+	}
+	if st.rec.Safe != s.Safe {
+		st.rec.Safe = s.Safe
+		dirty = true
 	}
 	// state_ack promises the mirror is durable: no ack while the record
 	// write fails, including a failure left over from an earlier change
