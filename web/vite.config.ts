@@ -22,12 +22,12 @@ export default defineConfig({
   optimizeDeps: { exclude: ["onnxruntime-web"] },
   plugins: [
     {
-      // Safe mode's WASM runtime is served as static files (dev and dist alike).
+      // Safe mode's WASM runtime is served as static files under /assets/ (the only static prefix the daemon and server serve).
       name: "ort-runtime",
       buildStart() {
-        mkdirSync("public/redact/ort", { recursive: true });
+        mkdirSync("public/assets/redact/ort", { recursive: true });
         for (const f of ["ort-wasm-simd-threaded.asyncify.mjs", "ort-wasm-simd-threaded.asyncify.wasm"])
-          copyFileSync(`node_modules/onnxruntime-web/dist/${f}`, `public/redact/ort/${f}`);
+          copyFileSync(`node_modules/onnxruntime-web/dist/${f}`, `public/assets/redact/ort/${f}`);
       },
     },
     {

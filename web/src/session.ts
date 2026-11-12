@@ -594,6 +594,8 @@ export class Session {
     if (!t) return;
     this.motion = motion;
     t.contentHint = motion ? "motion" : "text";
+    // A processed outgoing track (safe mode) is what the encoder sees: give it the same hint.
+    if (this.outgoing && this.outgoing !== t) this.outgoing.contentHint = t.contentHint;
     await t
       .applyConstraints({
         width: { max: 2560 },
@@ -634,7 +636,7 @@ export class Session {
     this.statsBusy = true;
     try {
       const pc = this.pc;
-      const stats = await (this.role === "publish" ? publisherStats(pc, this.stream) : pc.getStats());
+      const stats = await (this.role === "publish" ? publisherStats(pc, this.videoSender) : pc.getStats());
       if (pc !== this.pc) return;
       this.recovery.observe(stats, performance.now());
       if (this.heartbeatReady) this.recover(performance.now());

@@ -23,4 +23,4 @@ __pycache__/
 *.db-*
 .codemux/
 .claude/
-/web/public/redact/ort/
+/web/public/assets/redact/ort/

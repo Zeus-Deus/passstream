@@ -36,7 +36,9 @@ func (d *Daemon) senderHandler() http.Handler {
 	if d.cfg.Assets != nil {
 		files = http.FileServer(http.FS(d.cfg.Assets))
 	}
-	csp := "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; " +
+	// 'wasm-unsafe-eval' (WASM compilation only, not JS eval) and cross-origin
+	// isolation are for safe mode's on-page text recognition (threaded WASM).
+	csp := "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; " +
 		"connect-src 'self' ws://" + d.host()
 	if d.cfg.ServerURL != "" {
 		csp += " " + d.cfg.ServerURL + " " + strings.TrimSuffix(serverapi.SignalURL(d.cfg.ServerURL), "/signal")
@@ -48,6 +50,7 @@ func (d *Daemon) senderHandler() http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Cross-Origin-Embedder-Policy", "require-corp")
 		h.Set("Content-Security-Policy", csp)
 		if r.Method != http.MethodGet && r.URL.Path != "/local/v1/features" {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

@@ -271,6 +271,7 @@ function SenderWindow({ store, trustedServer }: { store: ShellStore; trustedServ
                 Stop
               </Btn>
             </div>
+            <SafeStatus core={core} />
             <CurtainBanner core={core} act={act} />
             <Preview core={core} act={act} />
             <SenderHudPanel core={core} />
@@ -392,4 +393,23 @@ export function mountBrowserSender(el: HTMLElement) {
       core.sendSecrets();
     })
     .catch((e) => store.set({ state: "error", detail: String(e) }));
+}
+
+/** Safe mode's state, as the host sees it (viewers just see covers). */
+function SafeStatus({ core }: { core: SenderCore }) {
+  if (!core.safe || !core.capture) return null;
+  if (core.safeError) return <p className="text-stamp" data-testid="safe-status">{core.safeError}</p>;
+  const s = core.redactor?.stats;
+  const text = !s || s.status === "starting"
+    ? "Safe mode is starting: all text is hidden until it has been checked."
+    : s.status === "unavailable"
+      ? "Safe mode can't read the screen right now, so viewers see only hidden text. Turn it off to share normally."
+      : s.status === "catching_up"
+        ? `Safe mode: checking ${s.pending} new ${s.pending === 1 ? "line" : "lines"}; hidden until checked.`
+        : `Safe mode: ${s.covers} ${s.covers === 1 ? "item" : "items"} hidden from viewers.`;
+  return (
+    <p className={`text-[0.82rem] ${s?.status === "unavailable" ? "text-stamp" : "text-ink-mute"}`} data-testid="safe-status">
+      {text}
+    </p>
+  );
 }

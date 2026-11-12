@@ -189,9 +189,10 @@ async function diag(v, sp) {
   return { viewer: vd, sender: sd };
 }
 /** Start a share through the CLI; Playwright plays the daemon-launched sender window. */
-async function share(args = [], { tone = TONE_HZ, source = "clock", usePicker = false } = {}) {
+async function share(args = [], { tone = TONE_HZ, source = "clock", usePicker = false, safe = false } = {}) {
   const before = new Set(readdirSync(launches));
-  const pending = cliAsync(["share", "--no-wait", "--json", ...args]);
+  // Safe mode would cover the timing sources' changing text: only its own tests turn it on.
+  const pending = cliAsync(["share", "--no-wait", "--json", ...(safe ? [] : ["--no-safe"]), ...args]);
   let file;
   for (let i = 0; i < 400 && !file; i++) {
     file = readdirSync(launches).find((f) => f.endsWith(".args") && !before.has(f));
@@ -1522,6 +1523,50 @@ try {
     const recovered = Date.now() - t0;
     const ev = await v.evaluate(() => window.passstreamViewer.events.map((e) => e.kind + ":" + (e.detail ?? "")));
     return { pass: ev.filter((e) => e === "admitted:grant").length >= 1 && !ev.slice(2).some((e) => e === "hello:pin"), recovery_ms: recovered, events: ev };
+  });
+
+  await test("safe_mode_hides_card_from_viewers", async () => {
+    // web/src/source.ts sensitiveSource(): the card's digits and a plain line (1280×720 px).
+    const CARD = { x: 360, y: 206, w: 330, h: 30 }, PLAIN = { x: 64, y: 306, w: 400, h: 30 };
+    const s = await share([], { source: "sensitive", safe: true, tone: 0 });
+    const v = await viewer(s.link, { pin: s.pin });
+    await firstFrame(v);
+    // Luma standard deviation of a region of the decoded picture: text is high, a cover is flat.
+    const spread = (r) => v.evaluate((r) => {
+      const el = document.querySelector("video");
+      if (!el?.videoWidth) return -1;
+      const c = document.createElement("canvas");
+      c.width = el.videoWidth;
+      c.height = el.videoHeight;
+      const g = c.getContext("2d");
+      g.drawImage(el, 0, 0);
+      const k = el.videoWidth / 1280;
+      const d = g.getImageData(Math.round(r.x * k), Math.round(r.y * k), Math.round(r.w * k), Math.round(r.h * k)).data;
+      let n = 0, sum = 0, sq = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const l = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
+        n++, (sum += l), (sq += l * l);
+      }
+      return Math.sqrt(sq / n - (sum / n) ** 2);
+    }, r);
+    const until = async (cond, ms = 20000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        const x = { card: await spread(CARD), plain: await spread(PLAIN) };
+        if (cond(x)) return x;
+        await sleep(100);
+      }
+      return { card: await spread(CARD), plain: await spread(PLAIN), timeout: true };
+    };
+    // Safe mode on: plain text is revealed once checked, the card stays covered.
+    const on = await until((x) => x.plain > 30);
+    await v.screenshot({ path: join(out, "safe-mode-viewer-on.png") });
+    const reported = status()?.stream?.safe ?? status()?.safe;
+    const offCmd = cli(["safe", "off", "--json"]);
+    const off = await until((x) => x.card > 30);
+    await v.screenshot({ path: join(out, "safe-mode-viewer-off.png") });
+    // The cover's soft bar is not flat, but far flatter than readable digits.
+    return { pass: !on.timeout && on.card < on.plain * 0.4 && on.plain > 30 && !off.timeout && off.card > 30 && offCmd.code === 0 && reported === true, on, off, reported };
   });
 
   await test("pin_none_no_pin_screen_still_e2ee", async () => {

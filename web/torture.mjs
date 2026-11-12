@@ -229,7 +229,7 @@ async function publisher(v, source = process.env.TORTURE_SOURCE ?? "clock", qual
   const p = await page();
   // The server-served sender: test source, sender-generated PIN, E2EE on.
   const audioQuery = audioMode === "mline" ? "&audio_mline=1" : audioMode === "tone" ? "&tone=440" : "";
-  await p.goto(v.host_url.replace("/host#", `/host?test=1&source=${source}${process.env.TORTURE_TCP ? "&transport=tcp" : ""}${audioQuery}#`));
+  await p.goto(v.host_url.replace("/host#", `/host?test=1&safe=0&source=${source}${process.env.TORTURE_TCP ? "&transport=tcp" : ""}${audioQuery}#`));
   await p.getByTestId("test-source").click();
   if (!v.pin_none) v.pin = await readPin(p);
   v.link = await p.evaluate(() => window.passstreamSender.link);

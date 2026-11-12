@@ -42,6 +42,7 @@ import { senderHealth } from "./health";
 import { HostAnnotations } from "../annotations/host";
 import type { LocalChannel } from "./local-channel";
 import { OwnerCapture } from "./owner-capture";
+import { Redactor, safeModeSupported } from "../redact/redactor";
 
 export type Phase = "starting" | "picking" | "live" | "paused" | "ended";
 export type Channel = "local" | "remote" | "window";
@@ -93,8 +94,10 @@ export class SenderCore {
   mode: "text" | "motion";
   /** Safe mode (FEATURES.md "Safe mode"): redact sensitive data before encoding. On unless turned off locally. */
   safe: boolean;
-  /** Called after every safe mode change, with the new value; the redaction engine hooks in here. */
-  onSafeChange?: (on: boolean) => void;
+  /** The redaction engine while safe mode is on and a capture exists. */
+  redactor?: Redactor;
+  /** Set when safe mode is on but can't run: nothing but the paused picture is sent. */
+  safeError = "";
   recovery!: HostRecovery;
   session?: Session;
   capture: MediaStream | null = null;
@@ -145,7 +148,9 @@ export class SenderCore {
 
   private constructor(readonly cfg: SenderConfig) {
     this.mode = cfg.policy.mode;
-    this.safe = cfg.policy.safe ?? true;
+    // Test-only (`?test&safe=0` in an e2e build): synthetic timing sources change
+    // every frame and would stay covered (fail-closed), breaking frame decoding.
+    this.safe = (cfg.policy.safe ?? true) && !(SENDER_TEST_HOOKS && new URLSearchParams(location.search).get("safe") === "0");
     this.alerts = new AlertBatcher({
       onFlush: (b) => {
         if (b.failures > 0) this.alert({ kind: "failed_pin", count: b.failures, sources: b.sources, from_at: b.firstAt, to_at: b.lastAt });
@@ -527,7 +532,7 @@ export class SenderCore {
     }
     this.capture?.getTracks().forEach((t) => t.stop());
     this.capture = stream;
-    this.features?.source(stream);
+    this.redact(false);
     this.audio = stream.getAudioTracks()[0] ?? null;
     // Muted before it is attached: a paused stream never sends a frame of it.
     if (this.audio) this.audio.enabled = !this.latches.paused;
@@ -536,6 +541,7 @@ export class SenderCore {
     else if (this.liveAudio()) void this.session?.extendCurrent((pc) => this.addAudio(pc));
     const track = stream.getVideoTracks()[0];
     track.contentHint = this.mode === "motion" ? "motion" : "text";
+    if (this.redactor) this.redactor.track.contentHint = track.contentHint;
     track.addEventListener("ended", () => {
       if (this.capture === stream) void this.end("stopped", true);
     });
@@ -547,6 +553,57 @@ export class SenderCore {
     this.changed();
   }
 
+  /**
+   * The video that leaves this page: the redacted track while safe mode is
+   * on (FEATURES.md "Safe mode"), else the capture. Safe mode on but unable
+   * to run sends the paused picture: never the unredacted screen.
+   */
+  private live(): MediaStreamTrack | null {
+    const raw = this.capture?.getVideoTracks()[0] ?? null;
+    if (!raw || !this.safe) return raw;
+    if (this.redactor) return this.redactor.track;
+    this.blocked ??= statusSource("paused", raw.getSettings());
+    return this.blocked.getVideoTracks()[0];
+  }
+  /** The picture sent while safe mode is on but can't run. */
+  private blocked?: MediaStream;
+
+  /** (Re)build redaction for the current capture and policy, and switch every consumer to `live()`. */
+  private redact(apply = true) {
+    const raw = this.capture?.getVideoTracks()[0];
+    const want = this.safe && !!raw && raw.readyState === "live";
+    if (this.redactor && (!want || this.redactor.source !== raw)) {
+      this.redactor.stop();
+      this.redactor = undefined;
+    }
+    this.safeError = "";
+    if (this.blocked) {
+      stopTestSource(this.blocked);
+      this.blocked.getTracks().forEach((t) => t.stop());
+      this.blocked = undefined;
+    }
+    if (want && !this.redactor) {
+      try {
+        if (!safeModeSupported()) throw new Error("unsupported");
+        this.redactor = new Redactor(raw!, { holdMs: 0 });
+        this.redactor.track.contentHint = raw!.contentHint;
+        this.redactor.track.enabled = !this.latches.paused;
+        this.redactor.on((m) => m.type === "stats" && this.changed());
+      } catch {
+        this.safeError = "Safe mode can't run in this browser. Turn it off to share.";
+      }
+    }
+    // The host's preview, local snapshots and recordings see what viewers see.
+    const live = this.live();
+    this.preview = this.capture && live ? (live === raw ? this.capture : new MediaStream([live, ...this.capture.getAudioTracks()])) : null;
+    if (this.preview) this.features?.source(this.preview);
+    if (apply) this.applyLatches(this.latches);
+    this.changed();
+  }
+
+  /** What the host's own preview shows: what viewers get. */
+  preview: MediaStream | null = null;
+
   /** Pause covers the screen and audio independently of encryption (HOST-CONTROL §5.6). */
   private applyLatches(l: Latches) {
     this.features?.sync();
@@ -555,6 +612,7 @@ export class SenderCore {
     if (this.audio) this.audio.enabled = !l.paused;
     if (l.paused) {
       if (track) track.enabled = false;
+      if (this.redactor) this.redactor.track.enabled = false;
       let fencing = false;
       if (track && !this.curtain.appliedAt) {
         this.curtain.appliedAt = Date.now();
@@ -578,7 +636,8 @@ export class SenderCore {
     } else {
       this.curtain.appliedAt = 0;
       if (track) track.enabled = true;
-      void this.session?.setOutgoing(track);
+      if (this.redactor) this.redactor.track.enabled = true;
+      void this.session?.setOutgoing(this.live());
       if (this.paused) {
         stopTestSource(this.paused);
         this.paused.getTracks().forEach((t) => t.stop());
@@ -644,8 +703,10 @@ export class SenderCore {
         return { ok: true, data: {} };
       case "safe":
         // Turning safe mode off is permissive: checkRemote refuses it from the server.
-        this.safe = args.on === true;
-        this.onSafeChange?.(this.safe);
+        if (this.safe !== (args.on === true)) {
+          this.safe = args.on === true;
+          this.redact();
+        }
         this.changed();
         return { ok: true, data: {} };
       case "lock":
@@ -873,8 +934,10 @@ export class SenderCore {
     stopTestSource(ended);
     ended.getTracks().forEach((t) => t.stop());
     this.capture?.getTracks().forEach((t) => t.stop());
+    this.redactor?.stop();
     if (this.capture) stopTestSource(this.capture);
     if (this.paused) stopTestSource(this.paused);
+    if (this.blocked) stopTestSource(this.blocked);
     this.timers.forEach(clearInterval);
     this.annotations?.stop();
     await this.host.close().catch(() => undefined);
@@ -891,6 +954,7 @@ export class SenderCore {
     this.endedReason = "superseded";
     this.session?.stop();
     this.capture?.getTracks().forEach((t) => t.stop());
+    this.redactor?.stop();
     this.timers.forEach(clearInterval);
     this.annotations?.stop();
     await this.host?.close().catch(() => undefined);

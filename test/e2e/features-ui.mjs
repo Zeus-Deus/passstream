@@ -295,7 +295,7 @@ async function viewer(link, pin, size = [390, 844], { via = browser, low = false
 let currentSender = null;
 async function share(args = [], { tone = 0, source = null } = {}) {
   const before = new Set(readdirSync(launches));
-  const pending = cliAsync(["share", "--no-wait", "--json", ...args]);
+  const pending = cliAsync(["share", "--no-wait", "--json", "--no-safe", ...args]);
   let file;
   for (let i = 0; i < 400 && !file; i++) {
     file = readdirSync(launches).find((f) => f.endsWith(".args") && !before.has(f));

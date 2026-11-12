@@ -44,9 +44,9 @@ function assets() {
     return r;
   };
   assetsPromise ??= Promise.all([
-    get("/redact/rec.onnx").then((r) => r.arrayBuffer()),
-    get("/redact/dict.txt").then((r) => r.text()),
-    get("/redact/ort/ort-wasm-simd-threaded.asyncify.wasm").then((r) => r.arrayBuffer()),
+    get("/assets/redact/rec.onnx").then((r) => r.arrayBuffer()),
+    get("/assets/redact/dict.txt").then((r) => r.text()),
+    get("/assets/redact/ort/ort-wasm-simd-threaded.asyncify.wasm").then((r) => r.arrayBuffer()),
   ]).then(([model, dict, wasmBinary]) => ({ model, dict, wasmBinary }));
   assetsPromise.catch(() => (assetsPromise = null));
   return assetsPromise;
@@ -78,7 +78,7 @@ export class Redactor {
       const w = new OcrWorker({ name: `safe-mode-ocr-${i}` });
       w.postMessage({ type: "port", port: channel.port1 }, [channel.port1]);
       void assets().then(
-        (a) => w.postMessage({ type: "init", ...a, wasm: new URL("/redact/ort/", location.href).href, gpu: opts.gpu ?? true, threads, keepText: !!opts.test }),
+        (a) => w.postMessage({ type: "init", ...a, wasm: new URL("/assets/redact/ort/", location.href).href, gpu: opts.gpu ?? true, threads, keepText: !!opts.test }),
         (e) => console.error("safe mode assets", String(e)),
       );
       this.ocr.push(w);
