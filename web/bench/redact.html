@@ -1,0 +1,53 @@
+<!doctype html><html><head><meta charset="utf-8"><title>safe-mode-bench</title><style>
+*{box-sizing:border-box}body{margin:0;width:1920px;height:1080px;background:#1e1e2e;font-family:"Inter","Noto Sans",sans-serif;color:#cdd6f4;display:grid;grid-template-columns:1100px 820px}
+.win{margin:14px;border-radius:10px;overflow:hidden;background:#fff;color:#1d1d1f;box-shadow:0 8px 30px #0008}
+.bar{background:#ececec;padding:8px 14px;font-size:13px;color:#555}
+.mail{display:grid;grid-template-columns:330px 1fr;height:1010px}
+.list{border-right:1px solid #ddd;font-size:14px}.list div{padding:12px 14px;border-bottom:1px solid #eee}.list b{display:block}
+.body{padding:22px 28px;font-size:15px;line-height:1.55}.body h2{margin:0 0 6px;font-size:21px}
+.meta{color:#666;font-size:13px;margin-bottom:16px}
+.term{margin:14px;border-radius:10px;background:#11111b;font:14px/1.5 "JetBrains Mono",monospace;padding:14px;height:470px;color:#a6e3a1}
+.bank{margin:0 14px;border-radius:10px;background:#181825;padding:18px;height:540px;font-size:15px}
+.bank h3{margin:0 0 12px;color:#f5e0dc}.row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #313244}
+.card{margin-top:16px;padding:16px;border-radius:12px;background:linear-gradient(135deg,#89b4fa,#cba6f7);color:#11111b;font:20px "JetBrains Mono",monospace}
+
+#popup{position:absolute;left:260px;top:180px;width:900px;height:620px;background:#fdfdfd;color:#222;border-radius:12px;box-shadow:0 20px 60px #000a;padding:26px 30px;font-size:15px;line-height:1.6;display:none}
+#popup h3{margin:0 0 10px;font-size:20px}
+.list{overflow:hidden}
+#scroller{height:470px;overflow:hidden}
+.caret{color:#a6e3a1}
+</style></head>
+<body>
+<div class="win"><div class="bar">Mail — Inbox</div><div class="mail">
+<div class="list">
+<div><b>Ana Ruiz</b>ana.ruiz@northwind-labs.com<br>Re: invoice for October</div>
+<div><b>Billing</b>billing@acme-payments.io<br>Your receipt</div>
+<div><b>Tom Becker</b>tom.becker84@gmail.com<br>Call me tomorrow</div>
+<div><b>HR Team</b>people@contoso.example<br>Payroll update</div>
+<div><b>Jun Park</b>jun.park@fabrikam.co.kr<br>Lunch?</div>
+<div><b>Release bot</b>Version 2.14.3 shipped<br>Build 2026.11.12 passed</div>
+</div>
+<div class="body" id="mailbody"><h2>Re: invoice for October</h2>
+<div class="meta">From: Ana Ruiz &lt;ana.ruiz@northwind-labs.com&gt; · To: me &lt;zed.hollis@proton.me&gt;</div>
+<p>Hi Zed,</p><p>Thanks for the quick turnaround. The total for October comes to <b>$12,480.50</b>, and the deposit of €3.200,00 was already received on 2026-10-03.</p>
+<p>Please wire the balance to IBAN <b>DE89 3704 0044 0532 0130 00</b> or charge the card on file ending in 4242. If anything is unclear, call me at <b>+1 (415) 555-0132</b> or my mobile 07700 900461.</p>
+<p>For reference, the purchase order is PO-77812 and version 3.4.1 of the contract applies. Meeting at 14:30 in room 4B.</p>
+<p>Best,<br>Ana</p></div></div></div>
+<div><div class="term">$ cat ~/.config/app/.env<br>DATABASE_URL=postgres://admin@db.internal:5432/prod<br>STRIPE_KEY=sk&#95;live_51Hx9kQ2eZvKYlo2C8nT4rWm<br>SUPPORT_EMAIL=help@passstream.example<br>$ git log --oneline -3<br>a3f9c21 fix: retry on 503 (#1842)<br>9be0d44 chore: bump to v1.20.0<br>$ uptime<br>&nbsp;14:02:11 up 12 days, load average: 0.42, 0.38, 0.31<br><span id="typed">$ </span><span class="caret">▌</span></div>
+<div class="bank"><h3>Checking ····7731</h3>
+<div class="row"><span>Available balance</span><b>$48,902.17</b></div>
+<div class="row"><span>Payroll — Contoso</span><span>+$6,250.00</span></div>
+<div class="row"><span>Rent transfer</span><span>-$2,400.00</span></div>
+<div class="row"><span>Coffee</span><span>-£4.20</span></div>
+<div class="row"><span>Routing</span><span>021000021</span></div>
+<div class="card">4539 1488 0343 6467<br><span style="font-size:14px">ZED HOLLIS · 09/29</span></div>
+</div></div>
+<div id="popup"><h3>Customer record #88213</h3>
+<p>Name: Priya Natarajan · Account manager: Leo Vance</p>
+<p>Email: priya.natarajan@globex-industries.com<br>Backup: p.nat1987@yahoo.co.uk</p>
+<p>Phone: +44 20 7946 0958 · Mobile: +1 646-555-0199</p>
+<p>Card on file: 5425 2334 3010 9903 (exp 04/28)<br>Billing IBAN: GB33 BUKB 2020 1555 5555 55</p>
+<p>Lifetime value: $184,220.75 · Open balance: €2,310.40</p>
+<p>API token: ghp_R8xk2LmQ9vT4nW7pZ1cY5bH3jD6fA0sE2gU8</p>
+<p>Notes: renewal due 2027-01-15, plan version 4.2.0, ticket #55812.</p>
+</div><script type="module" src="./redact-bench.ts"></script></body></html>
