@@ -18,6 +18,7 @@ export function stream(p: Partial<Stream> = {}): Stream {
     effective: {
       phase: "live",
       mode: "text",
+      safe: true,
       access: {
         pin: { required: true, kind: "digits", length: 4 },
         pin_version: 1,

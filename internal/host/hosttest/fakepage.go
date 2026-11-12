@@ -170,6 +170,7 @@ type Page struct {
 	seq        uint64
 	phase      string
 	mode       string
+	safe       bool
 	latches    proto.Latches
 	policy     proto.PinPolicy
 	pin        *string
@@ -195,7 +196,7 @@ func NewPage(app string) (*Page, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Page{Origin: origin, launchID: id, launchKey: key, instance: proto.NewId22(), phase: "starting", mode: "text",
+	return &Page{Origin: origin, launchID: id, launchKey: key, instance: proto.NewId22(), phase: "starting", mode: "text", safe: true,
 		results: map[string]map[string]any{}, codes: map[string]bool{}}, nil
 }
 
@@ -295,6 +296,9 @@ func (p *Page) serve(ctx context.Context, s *Session) error {
 		p.knock, _ = pol["knock"].(bool)
 		if m, ok := pol["mode"].(string); ok {
 			p.mode = m
+		}
+		if s, ok := pol["safe"].(bool); ok {
+			p.safe = s
 		}
 		if v, ok := pol["pin"].(string); ok {
 			p.pin = &v
@@ -427,7 +431,7 @@ func (p *Page) stateLocked() proto.SenderState {
 		fps := 30.0
 		h = &proto.Health{UplinkKbps: &k, FPS: &fps, QualityLimitation: "none"}
 	}
-	return proto.SenderState{V: 1, StreamID: p.streamID, Instance: p.instance, Seq: p.seq, Phase: phase, Mode: p.mode,
+	return proto.SenderState{V: 1, StreamID: p.streamID, Instance: p.instance, Seq: p.seq, Phase: phase, Mode: p.mode, Safe: p.safe,
 		E2EE: proto.E2EE{Status: "beta", Epoch: 1},
 		Access: proto.Access{Pin: pin, PinVersion: p.pinVer, Latches: p.latches, Knock: p.knock,
 			Failures: proto.Failures{Stream: p.failures, Limit: 20}},
@@ -666,6 +670,8 @@ func (p *Page) command(m map[string]any) {
 			}
 		case "mode":
 			p.mode = fmt.Sprint(args["mode"])
+		case "safe":
+			p.safe = args["on"] == true
 		case "lock":
 			p.latches.Locked = args["locked"] == true
 		case "kick":

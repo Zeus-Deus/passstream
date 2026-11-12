@@ -65,12 +65,12 @@ func TestCleanAndSchemas(t *testing.T) {
 		t.Fatal("the page may only report pin_changed by window")
 	}
 	var s SenderState
-	err := Into([]byte(`{"v":1,"stream_id":"AAAAAAAAAAAAAAAAAAAAAA","instance":"AAAAAAAAAAAAAAAAAAAAAA","seq":1,"end_reason":"future","phase":"warp","mode":"text",
+	err := Into([]byte(`{"v":1,"stream_id":"AAAAAAAAAAAAAAAAAAAAAA","instance":"AAAAAAAAAAAAAAAAAAAAAA","seq":1,"end_reason":"future","phase":"warp","mode":"text","safe":true,
 		"e2ee":{"status":"on","epoch":0,"suspended":false,"revocation_not_durable":false},
 		"access":{"pin":{"required":false,"kind":"none","length":null},"pin_version":0,"rotation_pending":false,"reconciling":false,
 		"latches":{"locked":false,"paused":false,"frozen":false},"knock":false,"failures":{"stream":0,"limit":20}},
 		"admissions":[],"knocks":[],"ends":[],"health":null,"pin":"1234","link":"x"}`), SenderStateV, &s)
-	if err != nil || s.Phase != "unknown" || s.EndReason != "unknown" {
+	if err != nil || s.Phase != "unknown" || !s.Safe || s.EndReason != "unknown" {
 		t.Fatalf("state: %v %q", err, s.Phase)
 	}
 }

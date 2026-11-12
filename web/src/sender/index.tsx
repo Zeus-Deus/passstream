@@ -264,6 +264,9 @@ function SenderWindow({ store, trustedServer }: { store: ShellStore; trustedServ
               <Btn tone="ghost" testid="mode" onClick={() => act("mode", { mode: core.mode === "text" ? "motion" : "text" })}>
                 {core.mode === "text" ? "Text mode" : "Motion mode"}
               </Btn>
+              <Btn tone="ghost" testid="safe" onClick={() => act("safe", { on: !core.safe })}>
+                {core.safe ? "Safe mode: on" : "Safe mode: off"}
+              </Btn>
               <Btn tone="ghost" testid="stop" onClick={() => act("stop", {})}>
                 Stop
               </Btn>
@@ -378,7 +381,7 @@ export function mountBrowserSender(el: HTMLElement) {
     stream: { id, publish_token: token, view_link_base: `${location.origin}/v#c=${cap}` },
     signalUrl: `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/signal`,
     serverUrl: location.origin,
-    policy: { pin_policy: policy, pin: null, knock: f.get("knock") === "1", mode: "text" },
+    policy: { pin_policy: policy, pin: null, knock: f.get("knock") === "1", mode: "text", safe: true },
     latches: { locked: false, paused: false, frozen: false },
     mayCreate: true,
   })

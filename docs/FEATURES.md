@@ -122,6 +122,18 @@ WebSocket's HMAC: `/owner` sends its short-lived bearer over loopback. With
 
 Design notes for the ranked features in [PLAN.md](PLAN.md) "Features". Each track keeps its own section.
 
+## Safe mode
+
+Safe mode redacts sensitive data (email addresses, card numbers, IBANs, phone
+numbers, money amounts and API secrets) from the outgoing video in the sender
+page, before encoding. It is **on by default** for every new stream; `passstream
+share --no-safe` or the daemon's `start {safe: false}` starts without it. Turning
+it on is restrictive, so any channel may do it, the dashboard included. Turning
+it off sends sensitive data unredacted, so it is **local only** (sender window,
+`passstream safe off`, the plugin), like unlocking (HOST-CONTROL §4.2). The
+sender reports it as `SenderState.safe`; it is not a latch, and the daemon
+restores it from its record after a sender reload.
+
 ## Track D2: live quality HUD, privacy curtain, laser pointer and annotations
 
 Status: design (2026-11-08). Code: `web/src/hud/`, `web/src/annotations/`, `e2ee/src/annotation.ts`, plus small hook-ups in the viewer, the sender page and the CLI.
