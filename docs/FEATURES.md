@@ -188,10 +188,10 @@ scene with 29–37 planted sensitive strings:
 | | Added delay per frame (p50 / p95) | Covered until checked |
 |---|---|---|
 | Static screen | 0 (no frames) | – |
-| Typing | 8 / 14–23 ms | ~25 ms per typed line |
-| Scrolling | 13 / 17 ms | 25–60 ms (cache hits) |
-| New window | ~12 ms | 0.7–1.1 s (CPU) |
-| Whole new screen | – | 0.8–1.5 s (CPU) |
+| Typing | 8.5 / 13 ms | ~25 ms per typed line |
+| Scrolling | 15 / 18 ms | 25–60 ms (cache hits) |
+| New window | ~12 ms | ~0.5 s (CPU) |
+| Whole new screen (cold) | – | ~1.1 s (CPU) |
 
 Recall on the planted strings was 100% in every scenario, including ones
 partly behind another window. The output hop itself costs 0.1 ms; the added
