@@ -57,12 +57,15 @@ export function segments(data: Uint8Array, w: number, h: number, exact = false):
   const scale = INPUT_H / h;
   const maxW = Math.floor(MAX_SEG / scale);
   const bg = background(data, w, h);
+  let lo = 255, hi = 0;
+  for (let i = 0; i < data.length; i++) (data[i] < lo && (lo = data[i])), data[i] > hi && (hi = data[i]);
+  const thr = Math.max(8, (hi - lo) * 0.3);
   const ink = new Uint8Array(w);
   for (let y = 0; y < h; y++) {
     const r = y * w;
     for (let x = 0; x < w; x++) {
       const d = data[r + x] - bg;
-      if (d > 40 || d < -40) ink[x] = 1;
+      if (d > thr || d < -thr) ink[x] = 1;
     }
   }
   const minGap = Math.max(2, Math.round(h * 0.3));
@@ -94,10 +97,14 @@ export function segments(data: Uint8Array, w: number, h: number, exact = false):
 
 /**
  * Write one segment into a [3, 48, bucket] slice of `dst` (bilinear resize,
- * grey replicated to the three channels, normalised to [-1, 1], zero pad).
+ * grey replicated to the three channels, contrast-stretched to [-1, 1], zero pad).
  */
 export function fill(dst: Float32Array, offset: number, data: Uint8Array, w: number, h: number, s: Segment) {
   const plane = INPUT_H * s.bucket;
+  // Stretch the crop's contrast to the full range: dim text reads like bright text.
+  let lo = 255, hi = 0;
+  for (let i = 0; i < data.length; i++) (data[i] < lo && (lo = data[i])), data[i] > hi && (hi = data[i]);
+  const k = hi > lo ? 2 / (hi - lo) : 0;
   const sx = (s.x1 - s.x0) / s.rw;
   const sy = h / INPUT_H;
   for (let y = 0; y < INPUT_H; y++) {
@@ -111,7 +118,7 @@ export function fill(dst: Float32Array, offset: number, data: Uint8Array, w: num
         const x0 = fx | 0, x1 = Math.min(w - 1, x0 + 1), wx = fx - x0;
         const a = data[y0 * w + x0] * (1 - wx) + data[y0 * w + x1] * wx;
         const b = data[y1 * w + x0] * (1 - wx) + data[y1 * w + x1] * wx;
-        v = (a * (1 - wy) + b * wy) / 127.5 - 1;
+        v = (a * (1 - wy) + b * wy - lo) * k - 1;
       }
       dst[r + x] = v;
       dst[r + plane + x] = v;
@@ -150,7 +157,7 @@ export function decode(probs: Float32Array, T: number, C: number, chars: string[
  * Join segment glyphs and classify the whole line: a space at each word-gap
  * cut; at a hard cut, each side keeps its own glyphs up to the join point.
  */
-export function classifyLine(glyphs: Glyph[][], segs: Segment[], h: number, keepText: boolean): LineResult {
+export function classifyLine(glyphs: Glyph[][], segs: Segment[], w: number, h: number, keepText: boolean): LineResult {
   const all: Glyph[] = [];
   glyphs.forEach((g0, i) => {
     const join = segs[i]?.join;
@@ -159,16 +166,33 @@ export function classifyLine(glyphs: Glyph[][], segs: Segment[], h: number, keep
     if (i > 0 && join === undefined && g.length && all.length && all[all.length - 1].c !== " ") all.push({ c: " ", x: (all[all.length - 1].x + g[0].x) / 2, p: 1 });
     all.push(...g);
   });
-  const text = all.map((g) => g.c).join("");
+  // String offsets → glyph index (a glyph may be two UTF-16 units).
+  let text = "";
+  const at: number[] = [];
+  all.forEach((g, i) => {
+    for (let k = 0; k < g.c.length; k++) at.push(i);
+    text += g.c;
+  });
   const covers: Cover[] = [];
   // Character pitch: median spacing between adjacent glyph centres.
   const gaps = all.slice(1).map((g, i) => g.x - all[i].x).filter((d) => d > 0).sort((a, b) => a - b);
   const pitch = gaps.length ? gaps[gaps.length >> 1] : h * 0.6;
   for (const sp of findSensitive(text)) {
-    covers.push({ x0: all[sp.start].x - pitch, x1: all[sp.end - 1].x + pitch, category: sp.category });
+    covers.push({ x0: all[at[sp.start]].x - pitch, x1: all[at[sp.end - 1]].x + pitch, category: sp.category });
   }
-  // A digit or "@" read with low confidence may be a misread secret: keep that line hidden.
-  if (all.some((g) => g.p < 0.35 && /[\d@]/.test(g.c) && !covers.some((c) => g.x >= c.x0 && g.x <= c.x1)))
+  // Keep the whole line hidden when the reading can't be trusted: a digit or
+  // "@" read with low confidence (a misread secret), low confidence overall,
+  // or far fewer glyphs than the ink's width holds (two rows squashed into one
+  // reading, a font the model can't read).
+  const mean = all.length ? all.reduce((s, g) => s + g.p, 0) / all.length : 1;
+  const expected = w / (h * 0.55);
+  if (
+    all.some((g) => g.p < 0.35 && /[\d@]/.test(g.c) && !covers.some((c) => g.x >= c.x0 && g.x <= c.x1)) ||
+    mean < 0.6 ||
+    // Nothing read from something as wide as a few characters: unreadable, not empty.
+    (!all.some((g) => g.c.trim()) && w >= h * 2) ||
+    (expected >= 6 && all.filter((g) => g.c !== " ").length < expected * 0.25)
+  )
     covers.push({ x0: -Infinity, x1: Infinity, category: "uncertain" });
   return keepText ? { covers, text } : { covers };
 }

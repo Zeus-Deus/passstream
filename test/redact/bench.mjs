@@ -1,5 +1,5 @@
 // Safe mode benchmark: before/after screenshots and timings.
-// Usage: node test/redact/bench.mjs [--gpu] [--hold=MS] [--out=DIR] [--headed]
+// Usage: node test/redact/bench.mjs [--gpu] [--threads=N] [--only=cold,typing,…] [--image] [--bypass] [--out=DIR] [--headed]
 // Needs the web dev server: (cd web && npx vite --port 5199 --strictPort)
 import { chromium } from "../../web/node_modules/playwright-core/index.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -7,11 +7,9 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 const arg = (k, d) => process.argv.find((a) => a.startsWith(`--${k}=`))?.split("=")[1] ?? d;
 const gpu = process.argv.includes("--gpu");
 const headed = process.argv.includes("--headed") || gpu;
-const hold = Number(arg("hold", "0"));
 const bypass = process.argv.includes("--bypass");
 const threads = arg("threads") ? Number(arg("threads")) : undefined;
 const only = arg("only");
-const workers = arg("workers") ? Number(arg("workers")) : undefined;
 const run = (name) => !only || only.split(",").includes(name);
 const out = arg("out", "/tmp/redact/out");
 const url = arg("url", "http://localhost:5199/bench/redact.html");
@@ -29,12 +27,12 @@ await page.goto(url);
 await page.waitForFunction(() => window.bench);
 
 const png = (name, dataUrl) => writeFileSync(`${out}/${name}.png`, Buffer.from(dataUrl.split(",")[1], "base64"));
-const report = { gpu, hold, runs: {} };
+const report = { gpu, runs: {} };
 const needles = {};
 const image = process.argv.includes("--image");
 const start = image
-  ? await page.evaluate(([o, u]) => window.bench.startImage(o, u), [{ holdMs: hold, gpu, threads, workers }, "/static-before.png"])
-  : await page.evaluate((o) => window.bench.start(o), { holdMs: hold, gpu, bypass, threads, workers });
+  ? await page.evaluate(([o, u]) => window.bench.startImage(o, u), [{ gpu, threads }, "/static-before.png"])
+  : await page.evaluate((o) => window.bench.start(o), { gpu, bypass, threads });
 report.start = { settings: start.settings, backend: start.stats?.backend, readyMs: Math.round(start.readyMs) };
 console.log("ready", report.start);
 
@@ -135,6 +133,6 @@ for (const k of ["recallStatic", "recallTyping", "recallPopup"]) {
   const missed = r.filter((x) => x.covered < 90);
   console.log(k, `${r.length - missed.length}/${r.length} fully covered`, missed.length ? "MISSED: " + JSON.stringify(missed) : "");
 }
-const brief = Object.fromEntries(Object.entries(report.runs).map(([k, v]) => [k, { reveal: v.revealMs, added: v.added, frames: v.frames, pendingFrames: v.framesWithPendingCovers, proc: v.stats.proc, copy: v.stats.copy, diff: v.stats.diff, detect: v.stats.detect, compose: v.stats.compose, hold: v.stats.hold, ocr: v.stats.ocr, backend: v.stats.backend, pass: v.stats.passThrough }]));
+const brief = Object.fromEntries(Object.entries(report.runs).map(([k, v]) => [k, { reveal: v.revealMs, added: v.added, frames: v.frames, pendingFrames: v.framesWithPendingCovers, proc: v.stats.proc, copy: v.stats.copy, diff: v.stats.diff, detect: v.stats.detect, compose: v.stats.compose, ocr: v.stats.ocr, backend: v.stats.backend, pass: v.stats.passThrough }]));
 console.log(JSON.stringify(brief, null, 1));
 await browser.close();

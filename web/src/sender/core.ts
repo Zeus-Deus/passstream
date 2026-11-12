@@ -585,7 +585,7 @@ export class SenderCore {
     if (want && !this.redactor) {
       try {
         if (!safeModeSupported()) throw new Error("unsupported");
-        this.redactor = new Redactor(raw!, { holdMs: 0 });
+        this.redactor = new Redactor(raw!);
         this.redactor.track.contentHint = raw!.contentHint;
         this.redactor.track.enabled = !this.latches.paused;
         this.redactor.on((m) => m.type === "stats" && this.changed());
@@ -637,7 +637,14 @@ export class SenderCore {
       this.curtain.appliedAt = 0;
       if (track) track.enabled = true;
       if (this.redactor) this.redactor.track.enabled = true;
-      void this.session?.setOutgoing(this.live());
+      const live = this.live();
+      void this.session?.setOutgoing(live).then(async (ok) => {
+        if (ok || !this.safe || live === track) return;
+        // A sender kept the unredacted capture: send nothing, or at worst black.
+        this.safeError = "Couldn't switch the stream to safe mode, so the screen is hidden.";
+        if (!(await this.session?.setOutgoing(null)) && track) track.enabled = false;
+        this.changed();
+      });
       if (this.paused) {
         stopTestSource(this.paused);
         this.paused.getTracks().forEach((t) => t.stop());

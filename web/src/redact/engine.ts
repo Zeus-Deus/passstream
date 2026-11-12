@@ -6,7 +6,7 @@
  * lines cost nothing. A line without a verdict is covered until recognition
  * clears it: new text is never sent before it has been checked (fail-closed).
  */
-import { MAX_LINE_H, MIN_LINE_H, contentKey, crop, detectLines, tighten, type Box } from "./lines";
+import { MAX_LINE_H, contentKey, crop, cropBox, detectLines, tighten, type Box } from "./lines";
 import type { Cover, LineResult } from "./ocr";
 import type { OcrJob } from "./ocr-worker";
 
@@ -45,17 +45,27 @@ export class Engine {
   H = 0;
   private prev: Uint32Array | null = null;
   private luma = new Uint8Array(0);
+  /** HSL lightness, (max + min) / 2: shows saturated colours that luma hides. */
+  private light = new Uint8Array(0);
   private lines: Line[] = [];
   private cache = new Map<string, LineResult>();
   private inflight = new Map<string, number>();
 
   constructor(private readonly submit: (jobs: OcrJob[]) => void) {}
 
-  /** Forget everything (new capture, resize or policy change): all text is unknown again. */
+  /** Forget everything, verdicts included: all text is unknown again. */
   reset() {
     this.prev = null;
     this.lines = [];
     this.W = this.H = 0;
+    this.cache.clear();
+    this.inflight.clear();
+  }
+
+  /** Recognition dropped these jobs (backlog): lines still on screen are sent again. */
+  dropped(keys: string[]) {
+    for (const k of keys) this.inflight.delete(k);
+    this.resubmit(false);
   }
 
   /** Analyse one RGBX frame (little-endian u32 per pixel). `px` becomes the new baseline. */
@@ -67,6 +77,7 @@ export class Engine {
       this.prev = null;
       this.lines = [];
       this.luma = new Uint8Array(W * H);
+      this.light = new Uint8Array(W * H);
     }
     const tilesX = Math.ceil(W / TILE_W), tilesY = Math.ceil(H / TILE_H);
     const dirty = new Uint8Array(tilesX * tilesY);
@@ -117,24 +128,27 @@ export class Engine {
       if (!grew) break;
     }
     // Luma only for band rows; outside them it is unchanged.
-    const luma = this.luma;
+    const luma = this.luma, light = this.light;
     for (const [y0, y1] of bands)
       for (let i = y0 * W, end = y1 * W; i < end; i++) {
         const v = px[i];
-        luma[i] = ((v & 0xff) * 77 + ((v >>> 8) & 0xff) * 150 + ((v >>> 16) & 0xff) * 29) >> 8;
+        const r = v & 0xff, g = (v >>> 8) & 0xff, b = (v >>> 16) & 0xff;
+        luma[i] = (r * 77 + g * 150 + b * 29) >> 8;
+        const hi = r > g ? (r > b ? r : b) : g > b ? g : b, lo = r < g ? (r < b ? r : b) : g < b ? g : b;
+        light[i] = (hi + lo) >> 1;
       }
     const inBand = (b: Box) => bands.some(([y0, y1]) => b.y < y1 && b.y + b.h > y0);
     const kept = this.lines.filter((l) => !inBand(l.box));
     const jobs: OcrJob[] = [];
     for (const [y0, y1] of bands) {
-      for (const raw of detectLines(luma, W, H, y0, y1)) {
-        const box = tighten(luma, W, raw);
-        if (!box || box.h < MIN_LINE_H - 1) continue;
-        const key = contentKey(luma, W, box);
-        const c = crop(luma, W, H, box, PAD);
-        const offset = box.x - c.box.x;
+      for (const raw of detectLines(luma, light, W, H, y0, y1)) {
+        // No ink found inside a detected box: keep the whole box (fail-closed).
+        const box = tighten(luma, light, W, raw) ?? raw;
+        const key = contentKey(luma, light, W, box);
+        const offset = box.x - cropBox(W, H, box, PAD).x;
         kept.push({ box, key, offset });
         if (!this.cache.has(key) && !this.inflight.has(key)) {
+          const c = crop(luma, light, W, H, box, PAD);
           this.inflight.set(key, offset);
           jobs.push({ key, w: c.box.w, h: c.box.h, data: c.data });
         }
@@ -178,12 +192,12 @@ export class Engine {
     return n;
   }
   /** Send every on-screen line still waiting for a verdict again (a recognition worker failed). */
-  resubmit() {
-    this.inflight.clear();
+  resubmit(all = true) {
+    if (all) this.inflight.clear();
     const jobs: OcrJob[] = [];
     for (const l of this.lines) {
       if (this.cache.has(l.key) || this.inflight.has(l.key)) continue;
-      const c = crop(this.luma, this.W, this.H, l.box, PAD);
+      const c = crop(this.luma, this.light, this.W, this.H, l.box, PAD);
       this.inflight.set(l.key, l.box.x - c.box.x);
       jobs.push({ key: l.key, w: c.box.w, h: c.box.h, data: c.data });
     }

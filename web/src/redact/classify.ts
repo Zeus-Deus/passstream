@@ -39,7 +39,7 @@ const SECRET_TOKENS = [
   /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
   /\bAIza[0-9A-Za-z_-]{30,}/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, // JWT
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/g,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/g, // its body lines are OPAQUE
   /:\/\/[^\s:/@]+:[^\s@/]{3,}@/g, // URL credentials
 ];
 // NAME=value in env/shell form: the rest of the line (OCR may split the value).
@@ -96,8 +96,26 @@ function push(out: Span[], start: number, end: number, category: Category) {
 }
 
 /** Sensitive spans in one line, merged and sorted. */
+/**
+ * The text with OCR's letter-for-digit slips (O→0, I/l/|→1, S→5, B→8) undone
+ * inside runs that are mostly digits; same length, so offsets carry over.
+ */
+export function numeric(text: string): string {
+  // Per chunk: "O343" (mostly digits) is fixed, the word "or" next to a number isn't.
+  return text.replace(/(?<![A-Za-z])[0-9OoIl|SB]+(?![A-Za-z])/g, (m) => {
+    const d = (m.match(/\d/g) ?? []).length;
+    return d >= 1 && d * 2 >= m.length ? m.replace(/[Oo]/g, "0").replace(/[Il|]/g, "1").replace(/S/g, "5").replace(/B/g, "8") : m;
+  });
+}
+
+// A long token mixing upper and lower case and digits: a key, a token, a PEM
+// body line (hex hashes have no upper case and stay visible).
+const OPAQUE = /(?<![A-Za-z0-9+/_-])(?=[A-Za-z0-9+/_-]*[a-z])(?=[A-Za-z0-9+/_-]*[A-Z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{32,}={0,2}(?![A-Za-z0-9+/=_-])/g;
+
 export function findSensitive(text: string): Span[] {
   const out: Span[] = [];
+  const num = numeric(text);
+  for (const m of text.matchAll(OPAQUE)) push(out, m.index, m.index + m[0].length, "secret");
   for (const m of text.matchAll(EMAIL)) push(out, m.index, m.index + m[0].length, "email");
   for (const re of SECRET_TOKENS) for (const m of text.matchAll(re)) push(out, m.index, m.index + m[0].length, "secret");
   for (const m of text.matchAll(SECRET_ASSIGN)) {
@@ -113,10 +131,10 @@ export function findSensitive(text: string): Span[] {
     const compact = m[0].replace(/ /g, "");
     if (ibanValid(compact) || (/ /.test(m[0]) && compact.length >= 15)) push(out, m.index, m.index + m[0].length, "iban");
   }
-  for (const m of text.matchAll(CARD)) if (cardLike(m[0])) push(out, m.index, m.index + m[0].length, "card");
-  for (const m of text.matchAll(GROUPED)) if (m[0].replace(/\D/g, "").length >= 12) push(out, m.index, m.index + m[0].length, "card");
-  for (const m of text.matchAll(FOUR_GROUPS)) push(out, m.index, m.index + m[0].length, "card");
-  for (const m of text.matchAll(SSN)) push(out, m.index, m.index + m[0].length, "id");
+  for (const m of num.matchAll(CARD)) if (cardLike(m[0])) push(out, m.index, m.index + m[0].length, "card");
+  for (const m of num.matchAll(GROUPED)) if (m[0].replace(/\D/g, "").length >= 12) push(out, m.index, m.index + m[0].length, "card");
+  for (const m of num.matchAll(FOUR_GROUPS)) push(out, m.index, m.index + m[0].length, "card");
+  for (const m of num.matchAll(SSN)) push(out, m.index, m.index + m[0].length, "id");
   for (const m of text.matchAll(MONEY)) {
     if (!/\d/.test(m[0])) continue;
     const s = m[0].replace(/[\s,.']+$/, "");
@@ -128,8 +146,8 @@ export function findSensitive(text: string): Span[] {
     if (n < 7 || n > 15 || NOT_PHONE.some((re) => re.test(t))) return;
     push(out, start, start + s.length, "phone");
   };
-  for (const m of text.matchAll(PHONE_INTL)) phone(m.index, m[0]);
-  for (const m of text.matchAll(PHONE_NANP)) phone(m.index, m[0]);
+  for (const m of num.matchAll(PHONE_INTL)) phone(m.index, m[0]);
+  for (const m of num.matchAll(PHONE_NANP)) phone(m.index, m[0]);
   for (const m of text.matchAll(PHONE_WORD)) phone(m.index + m[0].length - m[1].length, m[1]);
   return merge(out);
 }

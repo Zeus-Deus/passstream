@@ -23,10 +23,21 @@ const GAP = 6;
 /** Text line height bounds in full-resolution pixels. */
 export const MIN_LINE_H = 5;
 export const MAX_LINE_H = 80;
+/** Groups taller than this are checked for several rows of text. */
+const SPLIT_H = 30;
+
+/** Largest luma step from pixel i to its right neighbours and the pixel below. */
+function step(p: Uint8Array, i: number, below: number): number {
+  const a = p[i];
+  const dx = a - p[i + 1], dx2 = a - p[i + 2], dy = a - p[i + below];
+  return Math.max(dx < 0 ? -dx : dx, dx2 < 0 ? -dx2 : dx2, dy < 0 ? -dy : dy);
+}
 
 /**
- * Lines whose components lie in rows [y0, y1) of a W×H luma image. A line
- * cut by the band edge is returned clipped; callers make bands generous.
+ * Lines whose components lie in rows [y0, y1) of a W×H image, given as luma
+ * and HSL lightness planes: luma alone misses saturated colours (pure blue on
+ * black is a luma step of 28; yellow on white, 29). A line cut by the band
+ * edge is returned clipped; callers make bands generous.
  *
  * Nothing that may be text is dropped for being too tall: long vertical
  * edges (window borders, dividers) are removed before grouping, and a tall
@@ -34,7 +45,7 @@ export const MAX_LINE_H = 80;
  * into lines by its row profile. Only bands still taller than a line after
  * that (pictures, video) are treated as non-text.
  */
-export function detectLines(luma: Uint8Array, W: number, H: number, y0 = 0, y1 = H): Box[] {
+export function detectLines(luma: Uint8Array, light: Uint8Array, W: number, H: number, y0 = 0, y1 = H): Box[] {
   const w = W >> 1;
   const top = y0 >> 1;
   const h = Math.max(0, Math.min(H >> 1, y1 >> 1) - top);
@@ -48,11 +59,7 @@ export function detectLines(luma: Uint8Array, W: number, H: number, y0 = 0, y1 =
     const o = y * w;
     for (let x = 0; x < w - 1; x++) {
       const i = r + x * S;
-      const a = luma[i];
-      const dx = a - luma[i + 1];
-      const dx2 = a - luma[i + 2];
-      const dy = a - luma[i + below];
-      if ((dx < 0 ? -dx : dx) > EDGE || (dx2 < 0 ? -dx2 : dx2) > EDGE || (dy < 0 ? -dy : dy) > EDGE) m[o + x] = 1;
+      if (step(luma, i, below) > EDGE || step(light, i, below) > EDGE) m[o + x] = 1;
     }
   }
   // Remove vertical runs longer than any line: borders would weld lines together.
@@ -126,27 +133,38 @@ export function detectLines(luma: Uint8Array, W: number, H: number, y0 = 0, y1 =
   const found: number[][] = []; // half-res [x0, y0, x1, y1]
   const lineMax = MAX_LINE_H / S;
   for (const b of roots.values()) {
-    if (b[3] - b[1] + 1 <= lineMax) {
+    // Taller than one ordinary line: rows welded by a box outline, descenders
+    // or a border. Split at near-empty rows (a box's sides add a few pixels).
+    if (b[3] - b[1] + 1 <= SPLIT_H / S) {
       found.push(b);
       continue;
     }
-    // Too tall for one line: split at near-empty rows of the group's box.
     const [x0, ya, x1, yb] = b;
-    const thresh = Math.max(1, Math.floor((x1 - x0 + 1) * 0.01));
+    const thresh = Math.max(4, Math.floor((x1 - x0 + 1) * 0.02));
+    const bands: number[][] = [];
     let bandStart = -1;
     for (let y = ya; y <= yb + 1; y++) {
       let n = 0;
       if (y <= yb) for (let x = x0, o = y * w; x <= x1; x++) n += sm[o + x];
       if (n > thresh && bandStart < 0) bandStart = y;
       else if (n <= thresh && bandStart >= 0) {
-        if (y - bandStart <= lineMax) {
-          let lx = x1, rx = x0;
-          for (let yy = bandStart; yy < y; yy++)
-            for (let x = x0, o = yy * w; x <= x1; x++) if (sm[o + x]) (lx = Math.min(lx, x)), (rx = Math.max(rx, x));
-          if (rx >= lx) found.push([lx, bandStart, rx, y - 1]);
-        }
+        bands.push([bandStart, y - 1]);
         bandStart = -1;
       }
+    }
+    // A sliver (an outline, an ascender row) joins its neighbour: nothing is dropped.
+    const merged: number[][] = [];
+    for (const band of bands) {
+      const last = merged[merged.length - 1];
+      if (last && (band[1] - band[0] + 1) * S < MIN_LINE_H) last[1] = band[1];
+      else if (last && (last[1] - last[0] + 1) * S < MIN_LINE_H) last[1] = band[1];
+      else merged.push(band);
+    }
+    for (const [top0, bot] of merged) {
+      if ((bot - top0 + 1) * S > MAX_LINE_H) continue; // a picture
+      let lx = x1, rx = x0;
+      for (let yy = top0; yy <= bot; yy++) for (let x = x0, o = yy * w; x <= x1; x++) if (sm[o + x]) (lx = Math.min(lx, x)), (rx = Math.max(rx, x));
+      if (rx >= lx) found.push([lx, top0, rx, bot]);
     }
   }
   // Words on one row become one line (a spaced card number is one token).
@@ -177,24 +195,30 @@ export function detectLines(luma: Uint8Array, W: number, H: number, y0 = 0, y1 =
   return out;
 }
 
+/** Ink is anything this far (luma or lightness) from the background: below EDGE, so detected text always has ink. */
+const INK = 14;
+
+function borderMode(p: Uint8Array, W: number, b: Box): number {
+  const hist = new Uint32Array(64);
+  for (let x = b.x; x < b.x + b.w; x++) hist[p[b.y * W + x] >> 2]++, hist[p[(b.y + b.h - 1) * W + x] >> 2]++;
+  for (let y = b.y; y < b.y + b.h; y++) hist[p[y * W + b.x] >> 2]++, hist[p[y * W + b.x + b.w - 1] >> 2]++;
+  let bg = 0;
+  for (let i = 1; i < 64; i++) if (hist[i] > hist[bg]) bg = i;
+  return bg * 4 + 2;
+}
+
 /**
  * The exact ink bounds of a box at full resolution: pixels that differ from
  * the box's background (its border's most common luma). Null if blank.
  */
-export function tighten(luma: Uint8Array, W: number, b: Box): Box | null {
-  const hist = new Uint32Array(64);
-  const sample = (x: number, y: number) => hist[luma[y * W + x] >> 2]++;
-  for (let x = b.x; x < b.x + b.w; x++) sample(x, b.y), sample(x, b.y + b.h - 1);
-  for (let y = b.y; y < b.y + b.h; y++) sample(b.x, y), sample(b.x + b.w - 1, y);
-  let bg = 0;
-  for (let i = 1; i < 64; i++) if (hist[i] > hist[bg]) bg = i;
-  const bgl = bg * 4 + 2;
+export function tighten(luma: Uint8Array, light: Uint8Array, W: number, b: Box): Box | null {
+  const bgl = borderMode(luma, W, b), bgL = borderMode(light, W, b);
   let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
   for (let y = b.y; y < b.y + b.h; y++) {
     const r = y * W;
     for (let x = b.x; x < b.x + b.w; x++) {
-      const d = luma[r + x] - bgl;
-      if (d > 40 || d < -40) {
+      const d = luma[r + x] - bgl, e = light[r + x] - bgL;
+      if (d > INK || d < -INK || e > INK || e < -INK) {
         if (x < x0) x0 = x;
         if (x > x1) x1 = x;
         if (y < y0) y0 = y;
@@ -210,26 +234,41 @@ export function tighten(luma: Uint8Array, W: number, b: Box): Box | null {
  * A 64-bit content key for a box's pixels (two independent 32-bit hashes
  * plus its size). Identical text at another position gives the same key.
  */
-export function contentKey(luma: Uint8Array, W: number, b: Box): string {
+export function contentKey(luma: Uint8Array, light: Uint8Array, W: number, b: Box): string {
   let h1 = 0x811c9dc5 ^ b.w;
   let h2 = 0x9e3779b9 ^ (b.h << 16);
   for (let y = b.y; y < b.y + b.h; y++) {
     const r = y * W;
     for (let x = b.x; x < b.x + b.w; x++) {
-      const v = luma[r + x];
+      const v = luma[r + x] | (light[r + x] << 8);
       h1 = Math.imul(h1 ^ v, 0x01000193);
       h2 = Math.imul(h2 ^ v, 0x85ebca6b);
       h2 ^= h2 >>> 13;
     }
   }
-  return `${b.w}x${b.h}:${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}`;
+  return `${b.w}x${b.h}:${(h1 >>> 0).toString(36)}.${(h2 >>> 0).toString(36)}`;
 }
 
-/** Copy a box (with `pad` pixels of context, clamped) out of a luma image. */
-export function crop(luma: Uint8Array, W: number, H: number, b: Box, pad: number): { data: Uint8Array; box: Box } {
+/** The crop rectangle for a box (with `pad` pixels of context, clamped). */
+export function cropBox(W: number, H: number, b: Box, pad: number): Box {
   const x = Math.max(0, b.x - pad), y = Math.max(0, b.y - pad);
-  const w = Math.min(W, b.x + b.w + pad) - x, h = Math.min(H, b.y + b.h + pad) - y;
+  return { x, y, w: Math.min(W, b.x + b.w + pad) - x, h: Math.min(H, b.y + b.h + pad) - y };
+}
+
+/**
+ * Copy a box out of whichever plane shows its text with more contrast (blue
+ * on near-black is invisible in luma), for recognition.
+ */
+export function crop(luma: Uint8Array, light: Uint8Array, W: number, H: number, b: Box, pad: number): { data: Uint8Array; box: Box } {
+  const box = cropBox(W, H, b, pad);
+  const { x, y, w, h } = box;
+  const range = (p: Uint8Array) => {
+    let lo = 255, hi = 0;
+    for (let r = 0; r < h; r++) for (let i = (y + r) * W + x, e = i + w; i < e; i++) (p[i] < lo && (lo = p[i])), p[i] > hi && (hi = p[i]);
+    return hi - lo;
+  };
+  const src = range(light) > range(luma) ? light : luma;
   const data = new Uint8Array(w * h);
-  for (let r = 0; r < h; r++) data.set(luma.subarray((y + r) * W + x, (y + r) * W + x + w), r * w);
-  return { data, box: { x, y, w, h } };
+  for (let r = 0; r < h; r++) data.set(src.subarray((y + r) * W + x, (y + r) * W + x + w), r * w);
+  return { data, box };
 }

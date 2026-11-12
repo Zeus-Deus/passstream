@@ -334,10 +334,11 @@ export class Session {
     this.negotiate = false;
     void this.offer();
   }
-  /** Swap the sender's outgoing track (capture, a paused canvas, or null). */
-  async setOutgoing(track: MediaStreamTrack | null) {
+  /** Swap the sender's outgoing track (capture, a paused canvas, or null). False if a sender refused it. */
+  async setOutgoing(track: MediaStreamTrack | null): Promise<boolean> {
     this.outgoing = track;
-    await Promise.all([this.videoSender, this.thumbnailSender].map(s => s?.replaceTrack(track).catch(() => {})));
+    const ok = await Promise.all([this.videoSender, this.thumbnailSender].map(s => s ? s.replaceTrack(track).then(() => true, () => false) : true));
+    return ok.every(Boolean);
   }
   /** The viewer renders into this element from now on (it may be remounted). */
   attachVideo(v: HTMLVideoElement | null) {

@@ -1,7 +1,7 @@
 /**
  * Safe mode's frame worker: capture VideoFrames in, redacted VideoFrames out.
- * A frame with nothing to hide passes through untouched (no copy, no
- * re-render). Otherwise covers are painted over it on an OffscreenCanvas.
+ * A frame with nothing to hide passes through untouched (no re-render).
+ * Otherwise covers are painted into its pixels.
  * Covers are synthetic: the background colour around the line and a soft
  * bar that reads as blurred text. Nothing is derived from the hidden pixels,
  * so nothing can be recovered from it (a real blur can leak digits).
@@ -10,8 +10,7 @@ import { Engine, type Rect } from "./engine";
 import type { OcrOut } from "./ocr-worker";
 
 export type RedactIn =
-  | { type: "start"; readable: ReadableStream<VideoFrame>; writable: WritableStream<VideoFrame>; ocr: MessagePort[]; holdMs: number; test: boolean; bypass?: boolean }
-  | { type: "hold"; ms: number }
+  | { type: "start"; readable: ReadableStream<VideoFrame>; writable: WritableStream<VideoFrame>; ocr: MessagePort; test: boolean; bypass?: boolean }
   | { type: "reset" }
   | { type: "stop" };
 export type RedactStatus = "starting" | "protecting" | "catching_up" | "unavailable";
@@ -29,7 +28,6 @@ export interface RedactStats {
   diff: [number, number, number];
   detect: [number, number, number];
   compose: [number, number, number];
-  hold: [number, number, number];
   /** Recognition passes: lines, wall time (ms). */
   ocr: { batches: number; lines: number; ms: number; lastMs: number };
   /** Time from a change appearing to its last line being cleared (ms). */
@@ -39,30 +37,13 @@ export type RedactOut =
   | { type: "stats"; stats: RedactStats }
   | { type: "frame"; at: number; covers: Rect[]; pending: number; texts?: Record<string, string>; ts?: number; inAt?: number; outAt?: number; kind?: string };
 
-/** Recognition workers and the lines each still owes (jobs go to the least loaded). */
-const ocrPorts: { port: MessagePort; owed: number; ready: boolean; failed: boolean }[] = [];
-const engine = new Engine((jobs) => {
-  const live = ocrPorts.filter((p) => !p.failed);
-  const ready = live.filter((p) => p.ready);
-  const pool = ready.length ? ready : live;
-  if (!pool.length) return; // all failed: lines stay covered
-  const batches = pool.map(() => [] as typeof jobs);
-  // Largest first onto the least loaded worker (by pixels owed).
-  for (const j of [...jobs].sort((a, b) => b.data.length - a.data.length)) {
-    let k = 0;
-    for (let i = 1; i < pool.length; i++) if (pool[i].owed < pool[k].owed) k = i;
-    pool[k].owed += j.data.length;
-    batches[k].push(j);
-  }
-  batches.forEach((b, i) => b.length && pool[i].port.postMessage({ type: "jobs", jobs: b }, b.map((j) => j.data.buffer as ArrayBuffer)));
-});
+let ocrPort: MessagePort | null = null;
+const engine = new Engine((jobs) => ocrPort?.postMessage({ type: "jobs", jobs }, jobs.map((j) => j.data.buffer as ArrayBuffer)));
 let writer: WritableStreamDefaultWriter<VideoFrame> | null = null;
-let holdMs = 0;
 let test = false;
 let status: RedactStatus = "starting";
 let backend = "";
 let stopped = false;
-let busy = false;
 let last: VideoFrame | null = null;
 let lastTs = 0;
 let lastTsAt = 0;
@@ -78,11 +59,10 @@ let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 const buffers: Uint32Array[] = [];
 let useCanvasCopy = false;
-let wake: (() => void) | null = null;
 /** When the oldest still-pending change appeared (for reveal timing). */
 let pendingSince = 0;
 
-const win = { proc: [] as number[], copy: [] as number[], diff: [] as number[], detect: [] as number[], compose: [] as number[], hold: [] as number[], reveal: [] as number[] };
+const win = { proc: [] as number[], copy: [] as number[], diff: [] as number[], detect: [] as number[], compose: [] as number[], reveal: [] as number[] };
 const counts = { frames: 0, passThrough: 0, refreshes: 0, covers: 0, pending: 0 };
 const ocr = { batches: 0, lines: 0, ms: 0, lastMs: 0 };
 
@@ -196,6 +176,7 @@ function paint(frame: VideoFrame, px: Uint32Array, covers: Rect[], timestamp: nu
 async function emit(frame: VideoFrame, px: Uint32Array, timestamp: number, refresh: boolean, inAt = 0): Promise<number> {
   const t0 = performance.now();
   const covers = engine.covers();
+  lastCovers = coverKey(covers);
   counts.covers = covers.length;
   counts.pending = engine.pendingCount();
   setStatus();
@@ -245,88 +226,114 @@ async function loop(reader: ReadableStreamDefaultReader<VideoFrame>, bypass: boo
       await writer?.write(frame);
       continue;
     }
-    busy = true;
-    try {
-      const t0 = performance.now();
-      const W = frame.visibleRect!.width, H = frame.visibleRect!.height;
-      const px = await copy(frame, W, H);
-      const t1 = performance.now();
-      // Fail closed if the browser can't read the frame (Chromium's Vulkan mode
-      // returns all-zero pixels): no text would be found and nothing hidden.
-      if (blank(px)) {
-        status = "unavailable";
-        engine.reset();
-        const out = new VideoFrame(neutral(W * H), { format: "RGBX", codedWidth: W, codedHeight: H, timestamp: frame.timestamp, duration: frame.duration ?? undefined });
-        lastTs = frame.timestamp;
-        lastTsAt = performance.now();
-        await writer?.write(out);
-        continue;
-      }
-      if (status === "unavailable" && !ocrFailed) status = "starting";
-      const report = engine.frame(px, W, H);
-      rec("copy", t1 - t0);
-      rec("diff", report.ms.diff);
-      if (report.changed) rec("detect", report.ms.detect);
-      if (report.pending && !pendingSince) pendingSince = t0;
-      // Hold briefly for small changes so typing doesn't flash covers.
-      let held = 0;
-      if (holdMs > 0 && report.pending && backend) {
-        const deadline = t0 + holdMs;
-        while (engine.pendingCount() && performance.now() < deadline) {
-          await new Promise<void>((res) => {
-            wake = res;
-            setTimeout(res, deadline - performance.now());
-          });
-        }
-        held = performance.now() - t1;
-        rec("hold", held);
-      }
-      last?.close();
-      last = frame.clone();
-      lastPx = px;
-      const handed = await emit(frame, px, frame.timestamp, false, t0);
-      rec("proc", handed - t0 - held);
-      counts.frames++;
-    } finally {
-      frame.close();
-      busy = false;
+    await serial(() => process(frame)).catch((e) => {
+      // Never a frozen or raw picture: report, and send neutral frames from now on.
+      console.error("safe mode frame", String(e));
+      status = "unavailable";
+      broken = true;
+    });
+  }
+}
+
+/** Set after an unexpected failure: every later frame is replaced. */
+let broken = false;
+
+/** A flat frame instead of the picture (unreadable frames, or a failed engine). */
+async function sendNeutral(W: number, H: number, duration: number | null) {
+  const out = new VideoFrame(neutral(W * H), { format: "RGBX", codedWidth: W, codedHeight: H, timestamp: nextTs(), duration: duration ?? undefined });
+  lastTs = out.timestamp;
+  lastTsAt = performance.now();
+  last?.close();
+  last = lastPx = null;
+  await writer?.write(out);
+}
+
+/**
+ * Frame work, re-analysis after a reset and static-screen refreshes run one at
+ * a time: they share the two pixel buffers and the engine's diff baseline.
+ */
+let chain: Promise<unknown> = Promise.resolve();
+function serial<T>(fn: () => Promise<T>): Promise<T> {
+  const p = chain.then(fn);
+  chain = p.catch(() => undefined);
+  return p;
+}
+
+async function process(frame: VideoFrame) {
+  try {
+    const t0 = performance.now();
+    const W = frame.visibleRect!.width, H = frame.visibleRect!.height;
+    if (broken) return await sendNeutral(W, H, frame.duration);
+    const px = await copy(frame, W, H);
+    const t1 = performance.now();
+    // Fail closed if the browser can't read the frame (Chromium's Vulkan mode
+    // returns all-zero pixels): no text would be found and nothing hidden.
+    if (blank(px)) {
+      status = "unavailable";
+      engine.reset();
+      await sendNeutral(W, H, frame.duration);
+      return;
     }
+    if (status === "unavailable" && !ocrFailed) status = "starting";
+    const report = engine.frame(px, W, H);
+    rec("copy", t1 - t0);
+    rec("diff", report.ms.diff);
+    if (report.changed) rec("detect", report.ms.detect);
+    if (report.pending && !pendingSince) pendingSince = t0;
+    last?.close();
+    last = frame.clone();
+    lastPx = px;
+    // Never behind a re-sent frame's stamp: WebRTC drops frames that go back in time.
+    const handed = await emit(frame, px, Math.max(frame.timestamp, lastTs + 1000), false, t0);
+    rec("proc", handed - t0);
+    counts.frames++;
+  } finally {
+    frame.close();
   }
 }
 let lastPx: Uint32Array | null = null;
 
 /** Re-analyse the last frame from scratch (after a reset) and send it: a static screen sends no frames. */
 async function reprocess() {
-  if (!last || busy) return;
-  busy = true;
-  try {
-    const W = last.visibleRect!.width, H = last.visibleRect!.height;
-    const px = await copy(last, W, H);
-    const report = engine.frame(px, W, H);
-    if (report.pending && !pendingSince) pendingSince = performance.now();
-    lastPx = px;
-    counts.refreshes++;
-    await emit(last, px, nextTs(), true);
-  } finally {
-    busy = false;
-  }
+  if (!last) return;
+  const W = last.visibleRect!.width, H = last.visibleRect!.height;
+  const px = await copy(last, W, H);
+  const report = engine.frame(px, W, H);
+  if (report.pending && !pendingSince) pendingSince = performance.now();
+  lastPx = px;
+  counts.refreshes++;
+  await emit(last, px, nextTs(), true);
 }
 
-function onOcr(m: OcrOut, from: (typeof ocrPorts)[number]) {
+/** A static screen sends no new frames: re-send the last one when its covers changed. */
+let refreshQueued = false;
+function refresh() {
+  if (refreshQueued) return;
+  refreshQueued = true;
+  void serial(async () => {
+    refreshQueued = false;
+    if (!last || !lastPx || coverKey(engine.covers()) === lastCovers) return;
+    counts.refreshes++;
+    await emit(last, lastPx, nextTs(), true);
+  });
+}
+function coverKey(covers: Rect[]) {
+  return covers.map((c) => `${c.x},${c.y},${c.w},${c.h},${c.kind}`).join(";");
+}
+let lastCovers = "";
+
+function onOcr(m: OcrOut) {
   if (m.type === "ready") {
-    from.ready = true;
-    backend = `${m.backend}${m.backend === "wasm" ? `×${m.threads}` : ""}${ocrPorts.length > 1 ? ` ×${ocrPorts.length} workers` : ""}`;
+    backend = `${m.backend}${m.backend === "wasm" ? `×${m.threads}` : ""}`;
     setStatus();
+  } else if (m.type === "dropped") {
+    engine.dropped(m.keys);
   } else if (m.type === "error") {
+    // Recognition is gone: nothing can clear a line any more, so all text stays covered.
     console.error("safe mode recogniser", m.message);
-    from.failed = true;
-    if (ocrPorts.every((p) => p.failed)) {
-      // Nothing can clear a line any more: everything stays covered.
-      status = "unavailable";
-      ocrFailed = true;
-    } else engine.resubmit();
+    status = "unavailable";
+    ocrFailed = true;
   } else if (m.type === "results") {
-    from.owed = Math.max(0, from.owed - m.bytes);
     ocr.batches++;
     ocr.lines += m.items.length;
     ocr.ms += m.ms;
@@ -337,25 +344,16 @@ function onOcr(m: OcrOut, from: (typeof ocrPorts)[number]) {
       rec("reveal", performance.now() - pendingSince);
       pendingSince = 0;
     }
-    wake?.();
-    // A static screen sends no new frames: re-send the last one with the new covers.
-    if (onScreen && !busy && last && lastPx) {
-      counts.refreshes++;
-      void emit(last, lastPx, nextTs(), true);
-    }
+    if (onScreen) refresh();
   }
 }
 
 self.onmessage = (e: MessageEvent<RedactIn>) => {
   const m = e.data;
   if (m.type === "start") {
-    holdMs = m.holdMs;
     test = m.test;
-    for (const port of m.ocr) {
-      const entry = { port, owed: 0, ready: false, failed: false };
-      ocrPorts.push(entry);
-      port.onmessage = (ev) => onOcr(ev.data as OcrOut, entry);
-    }
+    ocrPort = m.ocr;
+    ocrPort.onmessage = (ev) => onOcr(ev.data as OcrOut);
     writer = m.writable.getWriter();
     void loop(m.readable.getReader(), !!m.bypass).finally(() => void writer?.close().catch(() => undefined));
     setInterval(() => {
@@ -363,14 +361,15 @@ self.onmessage = (e: MessageEvent<RedactIn>) => {
         type: "stats",
         stats: {
           status, backend, ...counts, ocr: { ...ocr },
-          proc: q(win.proc), copy: q(win.copy), diff: q(win.diff), detect: q(win.detect), compose: q(win.compose), hold: q(win.hold), reveal: q(win.reveal),
+          proc: q(win.proc), copy: q(win.copy), diff: q(win.diff), detect: q(win.detect), compose: q(win.compose), reveal: q(win.reveal),
         },
       });
     }, 500);
-  } else if (m.type === "hold") holdMs = m.ms;
-  else if (m.type === "reset") {
-    engine.reset();
-    void reprocess();
+  } else if (m.type === "reset") {
+    void serial(async () => {
+      engine.reset();
+      await reprocess();
+    });
   }
   else if (m.type === "stop") {
     stopped = true;

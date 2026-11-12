@@ -88,14 +88,14 @@ async function waitClear(timeout = 10_000): Promise<number> {
 }
 
 const api = {
-  async start(opts: { holdMs: number; gpu: boolean; threads?: number; workers?: number; bypass?: boolean }) {
+  async start(opts: { gpu: boolean; threads?: number; bypass?: boolean }) {
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: 30 },
       preferCurrentTab: true,
     } as DisplayMediaStreamOptions);
     return api.startWith(stream.getVideoTracks()[0], opts);
   },
-  async startWith(source: MediaStreamTrack, opts: { holdMs: number; gpu: boolean; threads?: number; workers?: number; bypass?: boolean }) {
+  async startWith(source: MediaStreamTrack, opts: { gpu: boolean; threads?: number; bypass?: boolean }) {
     source.contentHint = "text";
     capture.width = source.getSettings().width ?? 1920;
     capture.height = source.getSettings().height ?? 1080;
@@ -188,7 +188,7 @@ const api = {
     });
   },
   /** Image source: a canvas showing screenshots (headed GPU runs, where tab capture is blank). */
-  async startImage(opts: { holdMs: number; gpu: boolean; threads?: number; workers?: number }, url: string) {
+  async startImage(opts: { gpu: boolean; threads?: number }, url: string) {
     const c = document.createElement("canvas");
     c.width = 1920;
     c.height = 1080;
@@ -233,7 +233,6 @@ const api = {
     return out;
   },
   covers: () => frames[frames.length - 1]?.covers ?? [],
-  setHold: (ms: number) => redactor.setHold(ms),
   reset: () => redactor.reset(),
   async type(text: string, every = 120) {
     const el = document.getElementById("typed")!;

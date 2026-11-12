@@ -1549,24 +1549,29 @@ try {
       }
       return Math.sqrt(sq / n - (sum / n) ** 2);
     }, r);
+    // Every sample counts, from the first decoded frame: the card must never be readable.
+    let maxCard = 0;
     const until = async (cond, ms = 20000) => {
       const end = Date.now() + ms;
       while (Date.now() < end) {
         const x = { card: await spread(CARD), plain: await spread(PLAIN) };
+        maxCard = Math.max(maxCard, x.card);
         if (cond(x)) return x;
-        await sleep(100);
+        await sleep(50);
       }
       return { card: await spread(CARD), plain: await spread(PLAIN), timeout: true };
     };
     // Safe mode on: plain text is revealed once checked, the card stays covered.
     const on = await until((x) => x.plain > 30);
+    for (let i = 0; i < 20; i++) maxCard = Math.max(maxCard, await spread(CARD)), await sleep(50);
+    const maxCardOn = maxCard;
     await v.screenshot({ path: join(out, "safe-mode-viewer-on.png") });
     const reported = status()?.stream?.safe ?? status()?.safe;
     const offCmd = cli(["safe", "off", "--json"]);
     const off = await until((x) => x.card > 30);
     await v.screenshot({ path: join(out, "safe-mode-viewer-off.png") });
     // The cover's soft bar is not flat, but far flatter than readable digits.
-    return { pass: !on.timeout && on.card < on.plain * 0.4 && on.plain > 30 && !off.timeout && off.card > 30 && offCmd.code === 0 && reported === true, on, off, reported };
+    return { pass: !on.timeout && maxCardOn < on.plain * 0.4 && on.plain > 30 && !off.timeout && off.card > 30 && offCmd.code === 0 && reported === true, on, maxCardOn, off, reported };
   });
 
   await test("pin_none_no_pin_screen_still_e2ee", async () => {

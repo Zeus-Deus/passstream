@@ -15,14 +15,18 @@ export interface OcrJob {
 }
 export type OcrIn =
   | { type: "init"; model: ArrayBuffer; dict: string; wasmBinary: ArrayBuffer; wasm: string; gpu: boolean; threads: number; keepText: boolean }
+  | { type: "fail"; message: string }
   | { type: "jobs"; jobs: OcrJob[] };
 export type OcrOut =
   | { type: "ready"; backend: "webgpu" | "wasm"; threads: number; loadMs: number }
-  | { type: "results"; items: { key: string; result: LineResult }[]; ms: number; segments: number; bytes: number }
+  | { type: "results"; items: { key: string; result: LineResult }[]; ms: number; segments: number }
+  | { type: "dropped"; keys: string[] }
   | { type: "error"; message: string };
 
 /** GPU: one dispatch serves many lines. CPU: padding to a shared width only wastes work. */
 let maxBatch = 32;
+const MAX_QUEUE = 400;
+const MAX_QUEUE_BYTES = 32 << 20;
 let exact = false;
 /** Lines per pass (results are posted after each): GPU batches many; CPU posts often so text clears progressively. */
 let maxLines = 48;
@@ -32,7 +36,9 @@ let chars: string[] = [];
 let keepText = false;
 const queue: OcrJob[] = [];
 let busy = false;
-let port: { postMessage(m: OcrOut): void } = self as unknown as { postMessage(m: OcrOut): void };
+/** The last ready or fatal status, repeated to each new frame worker. */
+let ready: OcrOut | null = null;
+let port: { postMessage(m: OcrOut): void } = { postMessage: () => undefined };
 
 async function init(m: Extract<OcrIn, { type: "init" }>) {
   const t0 = performance.now();
@@ -40,7 +46,7 @@ async function init(m: Extract<OcrIn, { type: "init" }>) {
   ort.env.wasm.wasmPaths = m.wasm;
   ort.env.wasm.numThreads = crossOriginIsolated ? m.threads : 1;
   ort.env.logLevel = "error";
-  // The runtime and model arrive with the message: fetched once for all workers.
+  // The runtime and model arrive with the message (fetched by the page).
   ort.env.wasm.wasmBinary = m.wasmBinary;
   const dict = m.dict.split("\n");
   if (dict[dict.length - 1] === "") dict.pop();
@@ -59,7 +65,8 @@ async function init(m: Extract<OcrIn, { type: "init" }>) {
   if (backend === "wasm") (maxBatch = 1), (exact = true), (maxLines = 8);
   // Warm the common shapes so the first real change isn't paying for shader/kernel setup.
   for (const b of [BUCKETS[2], BUCKETS[4]]) await run(new Float32Array(3 * INPUT_H * b), 1, b);
-  port.postMessage({ type: "ready", backend, threads: ort.env.wasm.numThreads ?? 1, loadMs: Math.round(performance.now() - t0) });
+  ready = { type: "ready", backend, threads: ort.env.wasm.numThreads ?? 1, loadMs: Math.round(performance.now() - t0) };
+  port.postMessage(ready);
 }
 
 async function run(input: Float32Array, n: number, bucket: number) {
@@ -70,37 +77,43 @@ async function run(input: Float32Array, n: number, bucket: number) {
   return { data, T: t.dims[1], C: t.dims[2] };
 }
 
+async function recognise(jobs: OcrJob[]) {
+  const segs: { job: number; k: number; seg: Segment }[] = [];
+  jobs.forEach((j, i) => segments(j.data, j.w, j.h, exact).forEach((seg, k) => segs.push({ job: i, k, seg })));
+  const glyphs: Glyph[][][] = jobs.map(() => []);
+  const byBucket = new Map<number, number[]>();
+  segs.forEach((s, i) => byBucket.set(s.seg.bucket, [...(byBucket.get(s.seg.bucket) ?? []), i]));
+  for (const [bucket, idx] of byBucket) {
+    for (let k = 0; k < idx.length; k += maxBatch) {
+      const part = idx.slice(k, k + maxBatch);
+      const plane = 3 * INPUT_H * bucket;
+      const input = new Float32Array(part.length * plane);
+      part.forEach((si, n) => {
+        const { job, seg } = segs[si];
+        fill(input, n * plane, jobs[job].data, jobs[job].w, jobs[job].h, seg);
+      });
+      const { data, T, C } = await run(input, part.length, bucket);
+      part.forEach((si, n) => {
+        const { job, k: at, seg } = segs[si];
+        glyphs[job][at] = decode(data.subarray(n * T * C, (n + 1) * T * C), T, C, chars, seg);
+      });
+    }
+  }
+  const items = jobs.map((j, i) => ({ key: j.key, result: classifyLine(glyphs[i], segs.filter((x) => x.job === i).map((x) => x.seg), j.w, j.h, keepText) }));
+  return { items, segments: segs.length };
+}
+
 async function pump() {
   if (busy || !session) return;
   busy = true;
   try {
     while (queue.length) {
       const t0 = performance.now();
-      const jobs = queue.splice(Math.max(0, queue.length - maxLines));
       // Newest first: what is on screen now matters more than what scrolled past.
-      const segs: { job: number; k: number; seg: Segment }[] = [];
-      jobs.forEach((j, i) => segments(j.data, j.w, j.h, exact).forEach((seg, k) => segs.push({ job: i, k, seg })));
-      const glyphs: Glyph[][][] = jobs.map(() => []);
-      const byBucket = new Map<number, number[]>();
-      segs.forEach((s, i) => byBucket.set(s.seg.bucket, [...(byBucket.get(s.seg.bucket) ?? []), i]));
-      for (const [bucket, idx] of byBucket) {
-        for (let k = 0; k < idx.length; k += maxBatch) {
-          const part = idx.slice(k, k + maxBatch);
-          const plane = 3 * INPUT_H * bucket;
-          const input = new Float32Array(part.length * plane);
-          part.forEach((si, n) => {
-            const { job, seg } = segs[si];
-            fill(input, n * plane, jobs[job].data, jobs[job].w, jobs[job].h, seg);
-          });
-          const { data, T, C } = await run(input, part.length, bucket);
-          part.forEach((si, n) => {
-            const { job, k: at, seg } = segs[si];
-            glyphs[job][at] = decode(data.subarray(n * T * C, (n + 1) * T * C), T, C, chars, seg);
-          });
-        }
-      }
-      const items = jobs.map((j, i) => ({ key: j.key, result: classifyLine(glyphs[i], segs.filter((x) => x.job === i).map((x) => x.seg), j.h, keepText) }));
-      port.postMessage({ type: "results", items, ms: performance.now() - t0, segments: segs.length, bytes: jobs.reduce((n, j) => n + j.data.length, 0) });
+      const jobs = queue.splice(Math.max(0, queue.length - maxLines));
+      // One retry (a transient GPU or allocation failure); then the lines stay covered.
+      const r = await recognise(jobs).catch(() => recognise(jobs));
+      port.postMessage({ type: "results", items: r.items, ms: performance.now() - t0, segments: r.segments });
     }
   } catch (e) {
     port.postMessage({ type: "error", message: String(e) });
@@ -110,19 +123,33 @@ async function pump() {
 }
 
 function onMessage(m: OcrIn) {
-  if (m.type === "init") void init(m).then(pump, (e) => port.postMessage({ type: "error", message: String(e) }));
+  const fatal = (message: string) => port.postMessage((ready = { type: "error", message }));
+  if (m.type === "init") void init(m).then(pump, (e) => fatal(String(e)));
+  else if (m.type === "fail") fatal(m.message);
   else {
     queue.push(...m.jobs);
+    // Bounded backlog: the oldest jobs go (scrolled past, or re-sent by the engine if still on screen).
+    let bytes = queue.reduce((n, j) => n + j.data.length, 0);
+    const drop: string[] = [];
+    while (queue.length > 1 && (queue.length > MAX_QUEUE || bytes > MAX_QUEUE_BYTES)) {
+      const j = queue.shift()!;
+      bytes -= j.data.length;
+      drop.push(j.key);
+    }
+    if (drop.length) port.postMessage({ type: "dropped", keys: drop });
     void pump();
   }
 }
 
-// The engine worker talks to this worker over a MessagePort handed over once.
+// One recognition worker serves the page; each frame worker (a new capture)
+// takes it over through a fresh MessagePort, dropping the old one's queue.
 self.onmessage = (e: MessageEvent) => {
   if (e.data?.type === "port") {
+    queue.length = 0;
     const p = e.data.port as MessagePort;
     port = p as unknown as typeof port;
     p.onmessage = (ev) => onMessage(ev.data as OcrIn);
+    if (ready) port.postMessage(ready);
     return;
   }
   onMessage(e.data as OcrIn);

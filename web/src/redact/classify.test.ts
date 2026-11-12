@@ -20,6 +20,9 @@ describe("safe mode classifier", () => {
     expect(hidden("SSN 078-05-1120")).toEqual([["078-05-1120", "id"]]);
     // Being typed: hidden before the last group.
     expect(hidden("pay 4111 1111 1111")).toEqual([["4111 1111 1111", "card"]]);
+    // Letters OCR reads for digits.
+    expect(hidden("4539 1488 O343 6467")).toEqual([["4539 1488 O343 6467", "card"]]);
+    expect(hidden("4539 I488 0343 6467")).toEqual([["4539 I488 0343 6467", "card"]]);
     // A long unformatted non-Luhn number is not a card.
     expect(hidden("build 4539148803436468")).toEqual([]);
   });
@@ -55,6 +58,9 @@ describe("safe mode classifier", () => {
     expect(hidden("STRIPE_KEY=sk_liVe_51Hx9kQ2eZvRYlo2l C8nT4rWm")).toEqual([["sk_liVe_51Hx9kQ2eZvRYlo2l C8nT4rWm", "secret"]]);
     expect(hidden("export DB_PASSWORD=correct horse")).toEqual([["correct horse", "secret"]]);
     expect(hidden("a3f9c21 fix: retry on 503 (#1842)")).toEqual([]);
+    // PEM body lines and bare tokens; hex hashes stay visible.
+    expect(hidden("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7")[0][1]).toBe("secret");
+    expect(hidden("commit 9be0d44e8b1f0c2a7d3e5f6a1b2c3d4e5f6a7b8c")).toEqual([]);
   });
 });
 
@@ -76,7 +82,7 @@ describe("long lines", () => {
     const glyphs: Glyph[][] = segs.map((s) =>
       [...key].map((c, i) => ({ c, x: (i + 0.5) * pitch, p: 0.99 })).filter((g) => g.x >= s.x0 && g.x < s.x1),
     );
-    const r = classifyLine(glyphs, segs, h, true);
+    const r = classifyLine(glyphs, segs, w, h, true);
     expect(r.text).toBe(key);
     expect(r.covers).toHaveLength(1);
     expect(r.covers[0].x0).toBeLessThan(pitch);
