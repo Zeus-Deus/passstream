@@ -18,7 +18,7 @@ export interface Init {
   server_url: string;
   signal_url: string;
   stream: { id: string; publish_token: string; view_link_base: string };
-  policy: { pin_policy: PinPolicyWire; pin: string | null; knock: boolean; mode: "text" | "motion" };
+  policy: { pin_policy: PinPolicyWire; pin: string | null; knock: boolean; mode: "text" | "motion"; safe: boolean };
   latches: LatchesWire;
   active_stream_ids: string[];
 }

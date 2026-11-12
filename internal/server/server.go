@@ -166,7 +166,13 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws:; media-src 'self' blob:; img-src 'self' data:; frame-ancestors 'none'")
+		// Safe mode's text recognition in the browser sender (/host) compiles WASM
+		// ('wasm-unsafe-eval': not JS eval) and needs cross-origin isolation for
+		// threads. Workers take these from their own (asset) responses, so all
+		// responses carry them; every page loads same-origin resources only.
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws:; media-src 'self' blob:; img-src 'self' data:; frame-ancestors 'none'")
 		mux.ServeHTTP(w, r)
 	})
 }

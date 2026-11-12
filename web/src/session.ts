@@ -334,10 +334,11 @@ export class Session {
     this.negotiate = false;
     void this.offer();
   }
-  /** Swap the sender's outgoing track (capture, a paused canvas, or null). */
-  async setOutgoing(track: MediaStreamTrack | null) {
+  /** Swap the sender's outgoing track (capture, a paused canvas, or null). False if a sender refused it. */
+  async setOutgoing(track: MediaStreamTrack | null): Promise<boolean> {
     this.outgoing = track;
-    await Promise.all([this.videoSender, this.thumbnailSender].map(s => s?.replaceTrack(track).catch(() => {})));
+    const ok = await Promise.all([this.videoSender, this.thumbnailSender].map(s => s ? s.replaceTrack(track).then(() => true, () => false) : true));
+    return ok.every(Boolean);
   }
   /** The viewer renders into this element from now on (it may be remounted). */
   attachVideo(v: HTMLVideoElement | null) {
@@ -471,7 +472,8 @@ export class Session {
         this.options.encrypt?.(t.sender, 0);
         this.videoSender = t.sender;
         await t.sender.replaceTrack(this.outgoing);
-        this.thumbnailSender = await addPublisherThumbnail(pc, this.stream, t => this.preferVP9(t), s => this.options.encrypt?.(s, 2), this.outgoing);
+        // Registered before its track is attached: a setOutgoing() meanwhile reaches it too.
+        await addPublisherThumbnail(pc, this.stream, t => this.preferVP9(t), s => { this.options.encrypt?.(s, 2); this.thumbnailSender = s; }, this.outgoing);
         await this.mode(track.contentHint === "motion");
       } else {
         const t = pc.addTransceiver("video", { direction: "recvonly" });
@@ -594,6 +596,8 @@ export class Session {
     if (!t) return;
     this.motion = motion;
     t.contentHint = motion ? "motion" : "text";
+    // A processed outgoing track (safe mode) is what the encoder sees: give it the same hint.
+    if (this.outgoing && this.outgoing !== t) this.outgoing.contentHint = t.contentHint;
     await t
       .applyConstraints({
         width: { max: 2560 },
@@ -634,7 +638,7 @@ export class Session {
     this.statsBusy = true;
     try {
       const pc = this.pc;
-      const stats = await (this.role === "publish" ? publisherStats(pc, this.stream) : pc.getStats());
+      const stats = await (this.role === "publish" ? publisherStats(pc, this.videoSender) : pc.getStats());
       if (pc !== this.pc) return;
       this.recovery.observe(stats, performance.now());
       if (this.heartbeatReady) this.recover(performance.now());

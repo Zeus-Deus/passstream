@@ -73,6 +73,7 @@ type SenderState struct {
 	Phase      string      `json:"phase"`
 	EndReason  string      `json:"end_reason,omitempty"`
 	Mode       string      `json:"mode"`
+	Safe       bool        `json:"safe"`
 	E2EE       E2EE        `json:"e2ee"`
 	Access     Access      `json:"access"`
 	Admissions []Admission `json:"admissions"`

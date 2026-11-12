@@ -13,6 +13,7 @@ export function testSource() {
   if (kind === "screen-production") return screenSource(4_000_000, true);
   if (kind === "screen" || kind === "screen-startup" || kind === "screen-baseline")
     return screenSource(kind === "screen-startup" ? 3_000_000 : 2_000_000);
+  if (kind === "sensitive") return sensitiveSource();
   const canvas = document.createElement("canvas");
   // `?source=720p`: the same scene scaled to exactly 1280×720 (the clock row
   // scales with it, so decoders that scale by width / 960 still read it).
@@ -230,6 +231,33 @@ function screenSource(maxBitrate: number, production = false) {
   const track = stream.getVideoTracks()[0];
   track.contentHint = production ? "text" : "motion";
   if (!production) sourceEncodings.set(track, { maxBitrate, maxFramerate: 15, scalabilityMode: "L1T3" });
+  stream.getVideoTracks()[0].addEventListener("ended", () => clearInterval(timer));
+  return stream;
+}
+
+/**
+ * `?source=sensitive` (safe mode e2e): static text with a fake card number at
+ * SENSITIVE_CARD and plain words at SENSITIVE_PLAIN (1280×720 coordinates).
+ */
+export const SENSITIVE_CARD = { x: 360, y: 206, w: 330, h: 30 };
+export const SENSITIVE_PLAIN = { x: 64, y: 306, w: 400, h: 30 };
+function sensitiveSource() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1280;
+  canvas.height = 720;
+  const ctx = canvas.getContext("2d")!;
+  const draw = () => {
+    ctx.fillStyle = "#f6f4ef";
+    ctx.fillRect(0, 0, 1280, 720);
+    ctx.fillStyle = "#1d2430";
+    ctx.font = "32px monospace";
+    ctx.fillText("Card on file:  4539 1488 0343 6467", 60, 230);
+    ctx.fillText("The quick brown fox jumps", 60, 330);
+  };
+  draw();
+  const timer = setInterval(draw, 1000);
+  const stream = canvas.captureStream(15);
+  sourceTimers.set(stream, timer);
   stream.getVideoTracks()[0].addEventListener("ended", () => clearInterval(timer));
   return stream;
 }

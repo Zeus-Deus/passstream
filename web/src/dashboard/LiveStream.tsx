@@ -223,6 +223,7 @@ export function LiveStream({ id, onSignedOut }: { id: string; onSignedOut: () =>
             {latches?.paused && <Badge tone="warn">PAUSED</Badge>}
             {latches?.frozen && <Badge tone="stamp">FROZEN</Badge>}
             {access?.knock && <Badge>KNOCK TO JOIN</Badge>}
+            {eff?.safe && <Badge tone="ok">SAFE MODE</Badge>}
             {access?.rotation_pending && <Badge tone="warn">PIN CHANGE PENDING</Badge>}
             {!access?.rotation_pending && access?.reconciling && <Badge tone="warn">RECONCILING</Badge>}
           </div>
@@ -250,6 +251,14 @@ export function LiveStream({ id, onSignedOut }: { id: string; onSignedOut: () =>
               )}
               {latches?.frozen && <Disabled label="Unfreeze" />}
               <Disabled label="Rotate PIN" />
+              {eff &&
+                (eff.safe ? (
+                  <Disabled label="Safe mode off" />
+                ) : (
+                  <button type="button" className="btn" disabled={busy !== null} onClick={() => send("safe", { on: true }, "stream", "Safe mode on: sensitive data is redacted.")}>
+                    Safe mode on
+                  </button>
+                ))}
               {eff && eff.mode !== "unknown" && (
                 <button
                   type="button"

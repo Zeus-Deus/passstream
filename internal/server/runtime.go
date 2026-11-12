@@ -184,7 +184,7 @@ func (s *Server) build(v store.Stream, l *liveStream) (store.Stream, error) {
 	v.Sender.Online = l.publisher != nil
 	if l.state != nil {
 		v.Sender.LastSeenAt = l.stateAt
-		v.Effective = &store.Effective{Phase: l.state.Phase, Mode: l.state.Mode, Access: l.state.Access, E2EE: l.state.E2EE, Health: l.state.Health}
+		v.Effective = &store.Effective{Phase: l.state.Phase, Mode: l.state.Mode, Safe: l.state.Safe, Access: l.state.Access, E2EE: l.state.E2EE, Health: l.state.Health}
 		if v.EndedAt == nil {
 			v.Phase = l.state.Phase
 		}

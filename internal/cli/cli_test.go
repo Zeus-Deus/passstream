@@ -222,3 +222,37 @@ func TestCurtainAndAnnotationsCommands(t *testing.T) {
 		}
 	}
 }
+
+// share --no-safe starts with safe mode off; safe on|off maps to the safe op.
+// Bad arguments are usage errors before any daemon call.
+func TestSafeModeCommands(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	for _, args := range [][]string{{"safe"}, {"safe", "maybe"}, {"safe", "on", "off"}, {"share", "--no-safe=1"}} {
+		if r := runCLI(t, "", args...); r.code != 2 {
+			t.Errorf("%v: exit %d (%s)", args, r.code, r.stderr)
+		}
+	}
+	daemonFor(t, nil)
+	if r := runCLI(t, "", "share", "--no-safe", "--json"); r.code != 0 {
+		t.Fatalf("share: %+v", r)
+	}
+	safe := func() any {
+		var hs map[string]any
+		json.Unmarshal([]byte(runCLI(t, "", "status", "--json").stdout), &hs)
+		return hosttest.Field(hs, "stream", "safe")
+	}
+	if got := safe(); got != false {
+		t.Fatalf("share --no-safe: safe = %v", got)
+	}
+	for _, c := range []struct {
+		arg  string
+		want bool
+	}{{"on", true}, {"off", false}} {
+		if r := runCLI(t, "", "safe", c.arg, "--json"); r.code != 0 {
+			t.Fatalf("safe %s: %+v", c.arg, r)
+		}
+		if got := safe(); got != c.want {
+			t.Fatalf("safe %s: safe = %v", c.arg, got)
+		}
+	}
+}

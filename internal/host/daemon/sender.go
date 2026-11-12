@@ -36,7 +36,9 @@ func (d *Daemon) senderHandler() http.Handler {
 	if d.cfg.Assets != nil {
 		files = http.FileServer(http.FS(d.cfg.Assets))
 	}
-	csp := "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; " +
+	// 'wasm-unsafe-eval' (WASM compilation only, not JS eval) and cross-origin
+	// isolation are for safe mode's on-page text recognition (threaded WASM).
+	csp := "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; " +
 		"connect-src 'self' ws://" + d.host()
 	if d.cfg.ServerURL != "" {
 		csp += " " + d.cfg.ServerURL + " " + strings.TrimSuffix(serverapi.SignalURL(d.cfg.ServerURL), "/signal")
@@ -48,6 +50,7 @@ func (d *Daemon) senderHandler() http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Cross-Origin-Embedder-Policy", "require-corp")
 		h.Set("Content-Security-Policy", csp)
 		if r.Method != http.MethodGet && r.URL.Path != "/local/v1/features" {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -372,7 +375,7 @@ func (d *Daemon) initLocked(st *stream, attach *state.Attachment) map[string]any
 		"signal_url": serverapi.SignalURL(st.rec.ServerURL),
 		"stream":     map[string]any{"id": st.rec.StreamID, "publish_token": st.rec.PublishToken, "view_link_base": st.rec.ViewLinkBase},
 		"policy": map[string]any{"pin_policy": st.rec.Policy, "pin": st.explicitPin, "knock": st.rec.Knock,
-			"mode": st.rec.Mode},
+			"mode": st.rec.Mode, "safe": st.rec.Safe},
 		"latches":           st.rec.Latches,
 		"active_stream_ids": []string{st.rec.StreamID},
 	}
@@ -608,6 +611,10 @@ func (d *Daemon) onState(st *stream, p *pageConn, raw any) {
 			st.rec.Mode = s.Mode
 			dirty = true
 		}
+	}
+	if st.rec.Safe != s.Safe {
+		st.rec.Safe = s.Safe
+		dirty = true
 	}
 	// state_ack promises the mirror is durable: no ack while the record
 	// write fails, including a failure left over from an earlier change
