@@ -18,11 +18,12 @@ function frame(lines: { x: number; y: number; n: number; seed?: number }[], bg =
   return px;
 }
 
-function setup() {
+function setup(limits?: { cache: number; inflight: number }) {
   const jobs: OcrJob[] = [];
-  const engine = new Engine((j) => jobs.push(...j));
+  const engine = new Engine((j) => jobs.push(...j), limits);
   return { engine, jobs };
 }
+const clean = (engine: Engine, jobs: OcrJob[]) => engine.results(jobs.map((j) => ({ key: j.key, result: { covers: [] } })));
 
 describe("safe mode engine", () => {
   it("covers new text until it is checked (fail-closed)", () => {
@@ -91,6 +92,30 @@ describe("safe mode engine", () => {
       expect(jobs.length).toBe(1);
       expect(engine.covers().some((c) => c.kind === "pending" && c.y <= 40 && c.y + c.h >= 54)).toBe(true);
     }
+  });
+
+  it("never evicts the verdict of a line still on screen", () => {
+    const { engine, jobs } = setup({ cache: 2, inflight: 1000 });
+    const kept = { x: 40, y: 40, n: 20 };
+    for (const seed of [0, 1, 2]) {
+      engine.frame(frame([kept, { x: 40, y: 200, n: 12, seed: seed + 1 }]), W, H);
+      clean(engine, jobs);
+      jobs.length = 0;
+    }
+    // Three verdicts, room for two: the oldest off-screen one goes, not the line still shown.
+    expect(engine.covers()).toEqual([]);
+  });
+
+  it("forgets off-screen lines while recognition is stuck, and reads them again", () => {
+    const { engine, jobs } = setup({ cache: 100, inflight: 2 });
+    for (const seed of [0, 1, 2]) engine.frame(frame([{ x: 40, y: 40, n: 20, seed }]), W, H);
+    expect(jobs).toHaveLength(3);
+    // A late verdict for a forgotten line has nothing to place it by: ignored.
+    engine.results([{ key: jobs[0].key, result: { covers: [] } }]);
+    engine.frame(frame([{ x: 40, y: 40, n: 20, seed: 0 }]), W, H);
+    expect(jobs).toHaveLength(4);
+    expect(jobs[3].key).toBe(jobs[0].key);
+    expect(engine.covers().map((c) => c.kind)).toEqual(["pending"]);
   });
 
   it("reads two rows inside a bordered box as two lines", () => {

@@ -16,6 +16,8 @@ export const TILE_H = 32;
 const MARGIN = MAX_LINE_H;
 const PAD = 2;
 const CACHE_MAX = 20_000;
+/** Lines awaiting recognition before off-screen ones are forgotten (above the recogniser's 400-job backlog). */
+const INFLIGHT_MAX = 1_000;
 
 export type CoverKind = Cover["category"] | "pending";
 export interface Rect {
@@ -51,7 +53,10 @@ export class Engine {
   private cache = new Map<string, LineResult>();
   private inflight = new Map<string, number>();
 
-  constructor(private readonly submit: (jobs: OcrJob[]) => void) {}
+  constructor(
+    private readonly submit: (jobs: OcrJob[]) => void,
+    private readonly limits = { cache: CACHE_MAX, inflight: INFLIGHT_MAX },
+  ) {}
 
   /** Forget everything, verdicts included: all text is unknown again. */
   reset() {
@@ -155,6 +160,11 @@ export class Engine {
       }
     }
     this.lines = kept;
+    // Recognition stuck or gone: forget lines no longer on screen (they are read again if they return).
+    if (this.inflight.size > this.limits.inflight) {
+      const visible = new Set(kept.map((l) => l.key));
+      for (const k of this.inflight.keys()) if (!visible.has(k)) this.inflight.delete(k);
+    }
     if (jobs.length) this.submit(jobs);
     return { changed: true, dirtyTiles, lines: kept.length, pending: this.pendingCount(), ms: { diff: t1 - t0, detect: performance.now() - t1 } };
   }
@@ -163,18 +173,24 @@ export class Engine {
   results(items: { key: string; result: LineResult }[]): boolean {
     let onScreen = false;
     for (const { key, result } of items) {
-      const offset = this.inflight.get(key) ?? PAD;
+      // Forgotten while recognition was stuck (see frame()): no offset to place it by.
+      const offset = this.inflight.get(key);
+      if (offset === undefined) continue;
       this.inflight.delete(key);
       const covers = result.covers.map((c) => ({ ...c, x0: c.x0 - offset, x1: c.x1 - offset }));
       this.cache.set(key, { covers });
       if (!onScreen && this.lines.some((l) => l.key === key)) onScreen = true;
     }
-    if (this.cache.size > CACHE_MAX) {
-      const drop = this.cache.size - CACHE_MAX;
-      let i = 0;
+    if (this.cache.size > this.limits.cache) {
+      // Oldest first, never a line on screen: an unchanged screen isn't re-read,
+      // so an evicted visible line would stay covered.
+      const visible = new Set(this.lines.map((l) => l.key));
+      let drop = this.cache.size - this.limits.cache;
       for (const k of this.cache.keys()) {
-        if (i++ >= drop) break;
+        if (drop <= 0) break;
+        if (visible.has(k)) continue;
         this.cache.delete(k);
+        drop--;
       }
     }
     return onScreen;

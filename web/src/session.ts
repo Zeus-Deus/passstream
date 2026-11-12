@@ -472,7 +472,8 @@ export class Session {
         this.options.encrypt?.(t.sender, 0);
         this.videoSender = t.sender;
         await t.sender.replaceTrack(this.outgoing);
-        this.thumbnailSender = await addPublisherThumbnail(pc, this.stream, t => this.preferVP9(t), s => this.options.encrypt?.(s, 2), this.outgoing);
+        // Registered before its track is attached: a setOutgoing() meanwhile reaches it too.
+        await addPublisherThumbnail(pc, this.stream, t => this.preferVP9(t), s => { this.options.encrypt?.(s, 2); this.thumbnailSender = s; }, this.outgoing);
         await this.mode(track.contentHint === "motion");
       } else {
         const t = pc.addTransceiver("video", { direction: "recvonly" });

@@ -635,14 +635,16 @@ export class SenderCore {
       if (this.phase === "live" || this.phase === "picking") this.phase = "paused";
     } else {
       this.curtain.appliedAt = 0;
-      if (track) track.enabled = true;
-      if (this.redactor) this.redactor.track.enabled = true;
       const live = this.live();
+      // The capture is enabled only while it is what gets sent. In safe mode it
+      // is disabled before the swap: a sender not yet switched (or refusing the
+      // switch) sends black, never the screen. The redactor reads its own copy.
+      if (track) track.enabled = live === track;
+      if (this.redactor) this.redactor.track.enabled = true;
       void this.session?.setOutgoing(live).then(async (ok) => {
-        if (ok || !this.safe || live === track) return;
-        // A sender kept the unredacted capture: send nothing, or at worst black.
+        if (ok || live === track) return;
         this.safeError = "Couldn't switch the stream to safe mode, so the screen is hidden.";
-        if (!(await this.session?.setOutgoing(null)) && track) track.enabled = false;
+        await this.session?.setOutgoing(null);
         this.changed();
       });
       if (this.paused) {

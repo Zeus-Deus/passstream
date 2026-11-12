@@ -36,9 +36,19 @@ declare const MediaStreamTrackGenerator: {
  * The model and runtime are fetched once and transferred, not copied.
  */
 let ocrWorker: Worker | null = null;
+/** Redactors running now: told when the recognition worker dies. */
+const live = new Set<Redactor>();
 function recogniser(opts: RedactorOptions): Worker {
   if (ocrWorker) return ocrWorker;
   const w = (ocrWorker = new OcrWorker({ name: "safe-mode-ocr" }));
+  // The worker failed to load or crashed: its text stays covered, and the next
+  // redactor (a new capture or a safe mode toggle) starts a fresh worker.
+  w.onerror = (e) => {
+    e.preventDefault();
+    if (ocrWorker === w) ocrWorker = null;
+    w.terminate();
+    for (const r of live) r.recogniserFailed(e.message || "recognition worker failed");
+  };
   const get = async (u: string) => {
     const r = await fetch(u);
     if (!r.ok) throw new Error(`${u}: ${r.status}`);
@@ -68,11 +78,16 @@ export class Redactor {
   readonly track: MediaStreamTrack;
   stats: RedactStats | null = null;
   private worker: Worker;
+  private input: MediaStreamTrack;
   private listeners = new Set<(m: RedactOut) => void>();
 
   constructor(readonly source: MediaStreamTrack, opts: RedactorOptions = {}) {
     if (!safeModeSupported()) throw new Error("safe mode needs MediaStreamTrackProcessor");
-    const processor = new MediaStreamTrackProcessor({ track: source, maxBufferSize: 2 });
+    // Its own copy of the capture: the capture itself stays disabled while safe
+    // mode is on, so a sender still holding it can only ever send black.
+    this.input = source.clone();
+    this.input.enabled = true;
+    const processor = new MediaStreamTrackProcessor({ track: this.input, maxBufferSize: 2 });
     const generator = new MediaStreamTrackGenerator({ kind: "video" });
     generator.contentHint = source.contentHint;
     this.track = generator;
@@ -85,6 +100,12 @@ export class Redactor {
     };
     const start: RedactIn = { type: "start", readable: processor.readable, writable: generator.writable, ocr: channel.port2, test: !!opts.test, bypass: !!opts.bypass };
     this.worker.postMessage(start, [processor.readable, generator.writable, channel.port2] as unknown as Transferable[]);
+    live.add(this);
+  }
+
+  /** The shared recognition worker died: nothing can clear text any more. */
+  recogniserFailed(message: string) {
+    this.worker.postMessage({ type: "ocrFailed", message } satisfies RedactIn);
   }
 
   /** Subscribe to stats (every 500 ms) and, in test mode, per-frame covers. */
@@ -99,6 +120,8 @@ export class Redactor {
   stop() {
     this.worker.postMessage({ type: "stop" } satisfies RedactIn);
     this.track.stop();
+    this.input.stop();
+    live.delete(this);
     // The recognition worker stays for the next capture.
     setTimeout(() => this.worker.terminate(), 100);
   }

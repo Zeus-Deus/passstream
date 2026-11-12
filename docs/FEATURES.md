@@ -172,8 +172,12 @@ Everything runs in the sender page; the server and SFU never see plaintext.
 
 The redacted track is the only video that leaves the page: both senders
 (native and the 180p thumbnail), resume after a pause, the host's preview and
-local snapshots and recordings. If safe mode is on but can't run, the paused
-picture is sent instead. If the browser returns blank pixels for every frame
+local snapshots and recordings. The redactor reads its own clone of the
+capture, and the capture track itself stays disabled while safe mode is on: a
+sender not yet switched to the redacted track (or refusing the switch) can
+only send black. If safe mode is on but can't run, the paused picture is sent
+instead; if the recognition worker fails to load or crashes, all text stays
+covered and the status is `unavailable`. If the browser returns blank pixels for every frame
 (Chromium with `--enable-features=Vulkan` does on NVIDIA/Wayland), the engine
 can't see text, so it sends a neutral frame and reports `unavailable`.
 

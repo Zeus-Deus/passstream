@@ -12,6 +12,7 @@ import type { OcrOut } from "./ocr-worker";
 export type RedactIn =
   | { type: "start"; readable: ReadableStream<VideoFrame>; writable: WritableStream<VideoFrame>; ocr: MessagePort; test: boolean; bypass?: boolean }
   | { type: "reset" }
+  | { type: "ocrFailed"; message: string }
   | { type: "stop" };
 export type RedactStatus = "starting" | "protecting" | "catching_up" | "unavailable";
 export interface RedactStats {
@@ -182,7 +183,8 @@ async function emit(frame: VideoFrame, px: Uint32Array, timestamp: number, refre
   setStatus();
   let out: VideoFrame;
   if (!covers.length && !refresh) {
-    out = frame.clone();
+    // A wrap, not a copy; the stamp must not go behind a re-sent frame's.
+    out = frame.timestamp === timestamp ? frame.clone() : new VideoFrame(frame, { timestamp });
     counts.passThrough++;
   } else out = paint(frame, px, covers, timestamp);
   if (!refresh) rec("compose", performance.now() - t0);
@@ -322,6 +324,13 @@ function coverKey(covers: Rect[]) {
 }
 let lastCovers = "";
 
+/** Recognition is gone: nothing can clear a line any more, so all text stays covered. */
+function recogniserGone(message: string) {
+  console.error("safe mode recogniser", message);
+  status = "unavailable";
+  ocrFailed = true;
+}
+
 function onOcr(m: OcrOut) {
   if (m.type === "ready") {
     backend = `${m.backend}${m.backend === "wasm" ? `×${m.threads}` : ""}`;
@@ -329,10 +338,7 @@ function onOcr(m: OcrOut) {
   } else if (m.type === "dropped") {
     engine.dropped(m.keys);
   } else if (m.type === "error") {
-    // Recognition is gone: nothing can clear a line any more, so all text stays covered.
-    console.error("safe mode recogniser", m.message);
-    status = "unavailable";
-    ocrFailed = true;
+    recogniserGone(m.message);
   } else if (m.type === "results") {
     ocr.batches++;
     ocr.lines += m.items.length;
@@ -371,6 +377,7 @@ self.onmessage = (e: MessageEvent<RedactIn>) => {
       await reprocess();
     });
   }
+  else if (m.type === "ocrFailed") recogniserGone(m.message);
   else if (m.type === "stop") {
     stopped = true;
     last?.close();
