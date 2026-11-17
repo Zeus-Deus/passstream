@@ -427,11 +427,14 @@ func TestPaddingFlightUsesProvenRateAndStandingHeadroom(t *testing.T) {
 	p.probeRate.Store(256_000)
 	p.probeRateAt.Store(now.UnixNano())
 	p.minimumFeedbackRTT.Store(int64(80 * time.Millisecond))
-	p.departedBytes.Store(12_000)
+	// Twice the proof over transit plus one feedback interval is 21KB. The
+	// offered ceiling would allow 412KB.
+	p.probeCeiling.Store(10_000_000)
+	p.departedBytes.Store(24_000)
 	if !p.flightLimited(10_000_000, true) {
 		t.Fatal("padding borrowed an unproven offered ceiling")
 	}
-	p.departedBytes.Store(4_000)
+	p.departedBytes.Store(8_000)
 	if p.flightLimited(10_000_000, true) {
 		t.Fatal("padding cannot exercise a proven flight window")
 	}
@@ -443,6 +446,40 @@ func TestPaddingFlightUsesProvenRateAndStandingHeadroom(t *testing.T) {
 	p.departedBytes.Store(0)
 	if !p.flightLimited(10_000_000, true) {
 		t.Fatal("padding continued at the standing cap")
+	}
+}
+
+// One flight window is released per feedback interval. With feedback at
+// libwebrtc's longest interval, a trial must still be able to deliver the rate
+// it is asked to prove; otherwise proof can never rise from the low rendition.
+func TestPaddingFlightCanDeliverItsTrialAtTheLongestFeedbackInterval(t *testing.T) {
+	const feedback = 250 * time.Millisecond
+	for _, c := range []struct{ proof, key int64 }{{1_571_371, 203_299}, {1_308_800, 203_296}, {900_000, 203_296}} {
+		ceiling := nativeTrialRate(0, c.key)
+		goal := nativeRefreshRate(c.key)
+		p := &Pacer{}
+		p.probeRate.Store(c.proof)
+		p.probeRateAt.Store(time.Now().UnixNano())
+		p.probeCeiling.Store(ceiling)
+		p.minimumFeedbackRTT.Store(int64(time.Millisecond))
+		// The largest flight the limiter admits, found by offering one more MTU at a time.
+		window := int64(0)
+		for !p.flightLimited(ceiling, true) {
+			window += wireMTU
+			p.departedBytes.Store(window)
+		}
+		if delivered := window * 8 * int64(time.Second) / int64(feedback); delivered < goal {
+			t.Errorf("proof %d: one flight per feedback delivers %d, below the %d a %d-byte key needs", c.proof, delivered, goal, c.key)
+		}
+	}
+	if got := paddingFlightRate(256_000, 10_000_000); got != 512_000 {
+		t.Errorf("a distant ceiling was borrowed: %d", got)
+	}
+	if got := paddingFlightRate(1_600_000, 1_789_000); got != 1_789_000 {
+		t.Errorf("a trial may fly what it offers: %d", got)
+	}
+	if got := paddingFlightRate(2_000_000, 1_789_000); got != 2_000_000 {
+		t.Errorf("an offer below the proof must not shrink the proven window: %d", got)
 	}
 }
 

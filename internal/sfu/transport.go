@@ -153,7 +153,7 @@ func (p *Pacer) flightLimited(rate int64, padding bool) bool {
 			return true
 		}
 		transit := max(baseline, min(time.Duration(p.rtt.Load()), baseline+2*standingDelayLimit))
-		limit := max(int64(wireMTU), int64(float64(proof)*(transit+min(200*time.Millisecond, headroom)).Seconds()/8))
+		limit := max(int64(wireMTU), int64(float64(paddingFlightRate(proof, p.probeCeiling.Load()))*(transit+min(paddingFlightWindow, headroom)).Seconds()/8))
 		return p.departedBytes.Load()-p.acknowledgedBytes.Load() >= limit
 	} else if time.Now().UnixNano() >= p.probeUntil.Load() {
 		rate = min(rate, proof*125/100)
@@ -163,6 +163,25 @@ func (p *Pacer) flightLimited(rate int64, padding bool) bool {
 	// Sparse screens retain sixteen MTUs; congestion-inflated RTT is excluded.
 	limit := max(minimum, int64(float64(rate)*(baseline+100*time.Millisecond).Seconds()/8))
 	return p.departedBytes.Load()-p.acknowledgedBytes.Load() >= limit
+}
+
+// Flight is released only by transport feedback, so a trial delivers at most
+// one flight window per feedback interval. A receiver of the low rendition
+// reports about every 250ms (libwebrtc's longest interval). A 200ms window at
+// exactly the proven rate therefore delivers under that rate: no trial could
+// raise the proof, and a viewer whose first estimate landed below a native
+// key's cost stayed on the low rendition for good.
+const paddingFlightWindow = 250 * time.Millisecond
+
+// A trial may put up to twice the proven rate in flight, and never more than
+// it was asked to offer. The wire bucket still paces it at that offered rate,
+// and an unproven ceiling far above the proof is not borrowed.
+func paddingFlightRate(proof, ceiling int64) int64 {
+	step := proof * 2
+	if ceiling > 0 {
+		step = min(step, max(proof, ceiling))
+	}
+	return step
 }
 
 // Match Pion's feedback RTT calculation, using the actual paced wire writes.
