@@ -53,19 +53,31 @@ export interface DrawControl {
   end(): void;
 }
 
-/** 0–4 bars from RTT, loss and frame rate; -1 without data. */
-export function qualityBars(q: Quality | null | undefined): number {
+/**
+ * 0–4 bars from RTT, loss and frame rate; -1 without data. A low frame rate
+ * only counts while the picture is expected to move (`moving`): a paused host
+ * sends a slow still picture, which says nothing about the connection.
+ */
+export function qualityBars(q: Quality | null | undefined, moving = true): number {
   if (!q || (q.rtt_ms === null && q.loss_pct === null)) return -1;
   const rtt = q.rtt_ms ?? 0,
     loss = q.loss_pct ?? 0;
   let bars = rtt <= 80 && loss <= 1 ? 4 : rtt <= 150 && loss <= 3 ? 3 : rtt <= 300 && loss <= 8 ? 2 : rtt <= 1000 && loss <= 25 ? 1 : 0;
-  if (q.fps !== null && q.fps < 4) bars = Math.min(bars, 2);
+  if (moving && q.fps !== null && q.fps < 4) bars = Math.min(bars, 2);
   return bars;
 }
-export function isDegraded(q: Quality | null | undefined) {
-  const b = qualityBars(q);
+export function isDegraded(q: Quality | null | undefined, moving = true) {
+  const b = qualityBars(q, moving);
   return b >= 0 && b < 3;
 }
+
+/**
+ * How long the connection must look weak before the viewer is told. One sample
+ * covers about a second, and the low-rate picture is a dozen packets in that
+ * time: a single late packet reads as 10% loss, and a picture that is starting
+ * or pausing reads as 1 fps. Neither lasts, on a perfect link included.
+ */
+export const WEAK_HOLD_MS = 3000;
 
 export type PlayerState = "live" | "paused" | "reconnecting";
 
@@ -211,7 +223,15 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
   const [pip, setPip] = useState(false);
   const [fsSupported, setFsSupported] = useState(false);
   const wake = useWakeLock(state === "live");
-  const degraded = isDegraded(quality) || state === "reconnecting";
+  const moving = state === "live";
+  const weak = isDegraded(quality, moving);
+  const [weakHeld, setWeakHeld] = useState(false);
+  useEffect(() => {
+    if (!weak) return setWeakHeld(false);
+    const t = setTimeout(() => setWeakHeld(true), WEAK_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [weak]);
+  const degraded = weakHeld || state === "reconnecting";
 
   const setVideo = useCallback(
     (v: HTMLVideoElement | null) => {
@@ -486,7 +506,7 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
     left: "max(0.75rem, env(safe-area-inset-left))",
     right: "max(0.75rem, env(safe-area-inset-right))",
   };
-  const bars = qualityBars(quality);
+  const bars = qualityBars(quality, moving);
   const fade = `transition-opacity duration-200 ${chrome ? "opacity-100" : "pointer-events-none opacity-0"}`;
 
   return (

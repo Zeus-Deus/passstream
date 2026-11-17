@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Player, useWakeLock } from "./Player";
+import { Player, useWakeLock, WEAK_HOLD_MS } from "./Player";
 import { ROW_COLOUR_HEX, rowCodeColour } from "./rowcode";
 
 afterEach(() => {
@@ -170,5 +170,44 @@ describe("paused", () => {
     rerender(<Player state="live" hasAudio autoHideMs={0} />);
     expect(screen.queryByTestId("paused-cover")).toBeNull();
     expect(screen.getByTestId("live-badge")).toBeInTheDocument();
+  });
+});
+
+describe("weak connection pill", () => {
+  const FINE = { rtt_ms: 1, loss_pct: 0, bitrate_kbps: 70, fps: 14, path: "direct" as const, layer: null, freezes: 0 };
+
+  it("ignores a blip: one sample of loss or a slow frame rate on a good link", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<Player state="live" quality={{ ...FINE, loss_pct: 14, fps: null }} autoHideMs={0} />);
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+    act(() => void vi.advanceTimersByTime(1000));
+    rerender(<Player state="live" quality={FINE} autoHideMs={0} />);
+    act(() => void vi.advanceTimersByTime(WEAK_HOLD_MS * 2));
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+  });
+
+  it("shows once the connection has stayed weak, and clears as soon as it recovers", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<Player state="live" quality={{ ...FINE, rtt_ms: 400 }} autoHideMs={0} />);
+    act(() => void vi.advanceTimersByTime(WEAK_HOLD_MS - 1));
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+    // New samples that are still weak don't restart the wait.
+    rerender(<Player state="live" quality={{ ...FINE, rtt_ms: 420 }} autoHideMs={0} />);
+    act(() => void vi.advanceTimersByTime(1));
+    expect(screen.getByTestId("quality-pill")).toHaveTextContent("Weak connection");
+    rerender(<Player state="live" quality={FINE} autoHideMs={0} />);
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+  });
+
+  it("doesn't read a paused host's slow still picture as a weak connection", () => {
+    vi.useFakeTimers();
+    render(<Player state="paused" quality={{ ...FINE, fps: 1 }} autoHideMs={0} />);
+    act(() => void vi.advanceTimersByTime(WEAK_HOLD_MS * 2));
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+  });
+
+  it("shows Reconnecting at once", () => {
+    render(<Player state="reconnecting" quality={FINE} autoHideMs={0} />);
+    expect(screen.getByTestId("quality-pill")).toHaveTextContent("Reconnecting");
   });
 });
