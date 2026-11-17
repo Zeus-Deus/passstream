@@ -953,7 +953,12 @@ func share(o *opts, env *Env) error {
 
 func humanStatus(data any) string {
 	d, _ := field(data, "daemon").(map[string]any)
-	lines := []string{fmt.Sprintf("daemon %v · server %v (%v) · key %v · port %v (%v)", d["version"], d["server_url"], d["server"], d["key"], d["port_owner"], d["port_mode"])}
+	// Without a URL the daemon has never contacted a server: its "ok" is only a default.
+	server := fmt.Sprintf("server %v (%v)", d["server_url"], d["server"])
+	if url, _ := d["server_url"].(string); url == "" {
+		server = "server not configured (set server = URL in ~/.config/passstream/config)"
+	}
+	lines := []string{fmt.Sprintf("daemon %v · %s · key %v · port %v (%v)", d["version"], server, d["key"], d["port_owner"], d["port_mode"])}
 	s, ok := field(data, "stream").(map[string]any)
 	if !ok {
 		return strings.Join(append(lines, "no share"), "\n")

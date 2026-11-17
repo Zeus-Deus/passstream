@@ -222,3 +222,15 @@ func TestCurtainAndAnnotationsCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusSaysWhenNoServerIsConfigured(t *testing.T) {
+	daemon := map[string]any{"version": "dev", "server_url": "", "server": "ok", "key": "missing", "port_owner": "ok", "port_mode": "self_bound"}
+	got := humanStatus(map[string]any{"daemon": daemon})
+	if strings.Contains(got, "(ok)") || !strings.Contains(got, "server not configured") {
+		t.Errorf("an unconfigured server must not read as ok: %q", got)
+	}
+	daemon["server_url"] = "https://stream.example"
+	if got := humanStatus(map[string]any{"daemon": daemon}); !strings.Contains(got, "server https://stream.example (ok)") {
+		t.Errorf("configured server line changed: %q", got)
+	}
+}

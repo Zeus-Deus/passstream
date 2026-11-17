@@ -126,6 +126,14 @@ func LoadFileConfig(path string) (FileConfig, error) {
 	return c, sc.Err()
 }
 
+// Asking for help is not a usage error.
+func parseExit(err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	return 2
+}
+
 // Main runs `passstream host ...` and returns the exit code.
 func Main(args []string) int {
 	if len(args) > 0 && args[0] == "install-units" {
@@ -136,7 +144,7 @@ func Main(args []string) int {
 	detach := fl.Bool("detach", false, "start in the background (no systemd) and return once the socket answers")
 	idle := fl.Duration("idle-exit", 60*time.Second, "exit after this long without a stream or a client (negative: never)")
 	if err := fl.Parse(args); err != nil {
-		return 2
+		return parseExit(err)
 	}
 	paths, err := daemon.DefaultPaths()
 	if err != nil {
@@ -275,7 +283,7 @@ func installUnits(args []string) int {
 	fl := flag.NewFlagSet("install-units", flag.ContinueOnError)
 	noEnable := fl.Bool("no-enable", false, "only write the unit files")
 	if err := fl.Parse(args); err != nil {
-		return 2
+		return parseExit(err)
 	}
 	exe, err := os.Executable()
 	if err == nil {

@@ -66,3 +66,15 @@ func TestInstallUnitsWritesOnlyUnderXDGConfig(t *testing.T) {
 		t.Errorf("service unit:\n%s", svc)
 	}
 }
+
+func TestHelpIsNotAUsageError(t *testing.T) {
+	if got := Main([]string{"--help"}); got != 0 {
+		t.Errorf("host --help exit %d, want 0", got)
+	}
+	if got := Main([]string{"install-units", "-h"}); got != 0 {
+		t.Errorf("host install-units -h exit %d, want 0", got)
+	}
+	if got := Main([]string{"--no-such-flag"}); got != 2 {
+		t.Errorf("unknown flag exit %d, want 2", got)
+	}
+}
