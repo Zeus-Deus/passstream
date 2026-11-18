@@ -180,6 +180,7 @@ test("first-time visitors can find viewer instructions and the owner dashboard",
   await page.goto(`${env().base}/`);
   await expect(page.getByRole("heading", { name: "Watch a stream" })).toBeVisible();
   await expect(page.getByText(/private link from your host/)).toBeVisible();
+  await expect(page.getByRole("link", { name: "Set up your sender" })).toHaveAttribute("href", "https://github.com/Zeus-Deus/passstream#run-locally");
   await expect(page.getByText("passstream share", { exact: true })).toBeVisible();
   await noHorizontalOverflow(page);
   await page.getByRole("link", { name: "Owner dashboard" }).click();

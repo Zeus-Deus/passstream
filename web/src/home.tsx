@@ -17,7 +17,7 @@ export function Home() {
           <section className="p-4 sm:p-6">
             <h2 className="display text-xl">Share your screen</h2>
             <p className="mt-2 text-ink-soft">
-              Use the PassStream bar plugin in Omarchy or run <code className="num whitespace-nowrap">passstream share</code>. Pick what to share, then send the link and any PIN separately.
+              <a className="underline underline-offset-2" href="https://github.com/Zeus-Deus/passstream#run-locally">Set up your sender</a> with your server URL and API key. Use the Omarchy bar plugin or run <code className="num whitespace-nowrap">passstream share</code>. Pick what to share, then send the link and any PIN separately.
             </p>
           </section>
         </div>
