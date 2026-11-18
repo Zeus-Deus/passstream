@@ -4,24 +4,37 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/passstream/passstream/internal/host/daemon"
+	"github.com/passstream/passstream/internal/host/hostcmd"
 	"github.com/passstream/passstream/internal/host/hosttest"
 	"github.com/passstream/passstream/internal/host/listen"
 	"github.com/passstream/passstream/internal/host/procnet"
+	"github.com/passstream/passstream/internal/host/proto"
 )
 
+const configErrorHelper = "PASSSTREAM_TEST_CONFIG_ERROR"
+
 func TestMain(m *testing.M) {
-	// The test binary is also the detached clipboard helper (wlClipboard).
-	if len(os.Args) > 1 && os.Args[1] == serveCommand {
-		os.Exit(Main(os.Args[1:]))
+	// The CLI runs these commands by starting another copy of its binary.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case serveCommand:
+			os.Exit(Main(os.Args[1:]))
+		case "host":
+			if os.Getenv(configErrorHelper) == "1" {
+				os.Exit(hostcmd.Main(os.Args[2:]))
+			}
+		}
 	}
 	hosttest.MaybeFakeBrowser()
 	os.Exit(m.Run())
@@ -116,6 +129,37 @@ func daemonFor(t *testing.T, mutate func(*daemon.Config)) *hosttest.FakeServer {
 		<-done
 	})
 	return srv
+}
+
+func TestHostConfigErrorIsOneJSONDocument(t *testing.T) {
+	if os.Getenv(configErrorHelper) == "1" {
+		os.Exit(Main([]string{"status", "--json"}))
+	}
+	root := t.TempDir()
+	conf := filepath.Join(root, "passstream")
+	if err := os.Mkdir(conf, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conf, "config"), []byte("server = http://stream.invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// An invalid config fails before the five-second socket retry window.
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHostConfigErrorIsOneJSONDocument$")
+	cmd.Env = append(os.Environ(), configErrorHelper+"=1", "XDG_RUNTIME_DIR="+root, "XDG_STATE_HOME="+root, "XDG_CONFIG_HOME="+root)
+	stdout, err := cmd.Output()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 3 || len(stdout) != 0 {
+		t.Fatalf("status --json: stdout %q, error %v", stdout, err)
+	}
+	var body struct{ Error proto.Error }
+	if err := json.Unmarshal(exit.Stderr, &body); err != nil {
+		t.Fatalf("status --json stderr %q: %v", exit.Stderr, err)
+	}
+	if body.Error.Code != "daemon_unreachable" || !strings.Contains(body.Error.Message, "plain http is allowed only on loopback") {
+		t.Fatalf("unexpected error: %+v", body.Error)
+	}
 }
 
 func TestCLIAgainstDaemon(t *testing.T) {

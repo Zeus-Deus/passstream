@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -71,14 +72,15 @@ func dial(spawn bool) (*conn, error) {
 	}
 	c, err := tryDial(sock)
 	if err != nil && spawn {
-		if exe, e := os.Executable(); e == nil {
-			cmd := exec.Command(exe, "host", "--detach")
-			cmd.Stdout, cmd.Stderr = nil, os.Stderr
-			cmd.Run()
-		}
+		startErr := startDaemon()
 		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 			if c, err = tryDial(sock); err == nil {
 				break
+			}
+			// The launcher already waited for its socket if it got that far.
+			// One retry allows a concurrent daemon to win a startup race.
+			if startErr != nil {
+				return nil, startErr
 			}
 		}
 	}
@@ -92,6 +94,25 @@ func dial(spawn bool) (*conn, error) {
 		return nil, err
 	}
 	return cn, nil
+}
+
+// startDaemon keeps launcher diagnostics in the CLI's chosen output format.
+func startDaemon() error {
+	exe, err := os.Executable()
+	if err == nil {
+		_, err = exec.Command(exe, "host", "--detach").Output()
+	}
+	if err == nil {
+		return nil
+	}
+	detail := err.Error()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		if text := strings.TrimSpace(string(exit.Stderr)); text != "" {
+			detail = strings.TrimPrefix(text, "passstream host: ")
+		}
+	}
+	return proto.E("daemon_unreachable", "%s: %s", errUnreachable, detail)
 }
 
 func tryDial(sock string) (net.Conn, error) {
