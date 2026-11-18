@@ -71,7 +71,7 @@ var errPromptInterrupted = errors.New("the terminal prompt was interrupted")
 
 // readSecretTTY prompts on /dev/tty with echo off.
 func readSecretTTY(prompt string) (string, error) {
-	// Keep the terminal pollable after Fd so Close can unblock a pending read.
+	// Keep the terminal pollable after Fd so Close can unblock pending I/O.
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return "", err
@@ -90,24 +90,35 @@ func readSecretTTY(prompt string) (string, error) {
 	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &nw); err != nil {
 		return "", err
 	}
-	defer unix.IoctlSetTermios(fd, unix.TCSETS, old)
-	fmt.Fprint(tty, prompt)
+	completed := false
+	defer func() {
+		// Restore echo before attempting any further terminal output.
+		_ = unix.IoctlSetTermios(fd, unix.TCSETS, old)
+		if completed {
+			// Bypass the Go poller so the newline never waits for output space.
+			_, _ = unix.Write(fd, []byte("\n"))
+		}
+	}()
 	type input struct {
 		line string
 		err  error
 	}
 	replies := make(chan input, 1)
 	go func() {
+		if _, err := io.WriteString(tty, prompt); err != nil {
+			replies <- input{err: err}
+			return
+		}
 		line, err := bufio.NewReader(tty).ReadString('\n')
 		replies <- input{line, err}
 	}()
 	var reply input
 	select {
 	case <-interrupt:
-		reply.err = errPromptInterrupted
+		return "", errPromptInterrupted
 	case reply = <-replies:
+		completed = true
 	}
-	fmt.Fprintln(tty)
 	if reply.err != nil && reply.line == "" {
 		return "", reply.err
 	}
@@ -365,9 +376,7 @@ func finish(err error, jsonOut bool, env *Env) int {
 		return exitOK
 	}
 	if errors.Is(err, errPromptInterrupted) {
-		if jsonOut {
-			printErr(env, true, proto.E("interrupted", "%s", err))
-		}
+		// The caller cancelled with Ctrl+C. Even stderr may be the blocked terminal.
 		return exitInterrupted
 	}
 	var u usageError
