@@ -335,6 +335,8 @@ something newer replaced it; a clipboard history may already have stored it.
 Ban, kick, unfreeze, PIN changes and knock approval use one action id per action
 (pass --action-id to reuse one across runs). Ban retries transient failures.
 Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not reachable, 4 port_not_owned.
+Ctrl+C at an interactive passphrase prompt exits silently with status 130,
+including in --json mode.
 `
 
 // Main runs the CLI and returns the exit code.
