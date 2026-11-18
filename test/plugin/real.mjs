@@ -80,7 +80,8 @@ const driver = (async () => {
   const v = await (await browser.newContext()).newPage();
   await v.goto(link);
   await v.getByTestId("pin-screen").waitFor({ timeout: 15000 });
-  await v.locator("input").first().fill(pin);
+  await v.getByTestId("pin-input").fill(pin);
+  await v.getByRole("button", { name: "Join" }).click();
   await v.waitForFunction(() => window.passstream?.firstFrame > 0, null, { timeout: 20000 });
   viewerState = await v.evaluate(() => ({ ttff: window.passstream.firstFrame, events: window.passstreamViewer.events.map((e) => e.kind) }));
 })().catch((e) => (viewerState = { error: String(e) }));
