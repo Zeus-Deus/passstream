@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ const (
 	exitUsage       = 2
 	exitUnreachable = 3
 	exitPort        = 4
+	exitInterrupted = 130
 )
 
 // Env is the process environment, replaceable in tests.
@@ -65,13 +67,19 @@ func isTTY(fd int) bool {
 	return err == nil
 }
 
+var errPromptInterrupted = errors.New("the terminal prompt was interrupted")
+
 // readSecretTTY prompts on /dev/tty with echo off.
 func readSecretTTY(prompt string) (string, error) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	// Keep the terminal pollable after Fd so Close can unblock a pending read.
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return "", err
 	}
 	defer tty.Close()
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	defer signal.Stop(interrupt)
 	fd := int(tty.Fd())
 	old, err := unix.IoctlGetTermios(fd, unix.TCGETS)
 	if err != nil {
@@ -84,12 +92,26 @@ func readSecretTTY(prompt string) (string, error) {
 	}
 	defer unix.IoctlSetTermios(fd, unix.TCSETS, old)
 	fmt.Fprint(tty, prompt)
-	line, err := bufio.NewReader(tty).ReadString('\n')
-	fmt.Fprintln(tty)
-	if err != nil && line == "" {
-		return "", err
+	type input struct {
+		line string
+		err  error
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	replies := make(chan input, 1)
+	go func() {
+		line, err := bufio.NewReader(tty).ReadString('\n')
+		replies <- input{line, err}
+	}()
+	var reply input
+	select {
+	case <-interrupt:
+		reply.err = errPromptInterrupted
+	case reply = <-replies:
+	}
+	fmt.Fprintln(tty)
+	if reply.err != nil && reply.line == "" {
+		return "", reply.err
+	}
+	return strings.TrimRight(reply.line, "\r\n"), nil
 }
 
 // usageError is exit code 2. Its message never contains the offending
@@ -342,6 +364,12 @@ func finish(err error, jsonOut bool, env *Env) int {
 	if err == nil {
 		return exitOK
 	}
+	if errors.Is(err, errPromptInterrupted) {
+		if jsonOut {
+			printErr(env, true, proto.E("interrupted", "%s", err))
+		}
+		return exitInterrupted
+	}
 	var u usageError
 	if errors.As(err, &u) {
 		if jsonOut {
@@ -418,6 +446,9 @@ func readPin(o *opts, env *Env, required bool, prompt string) (*string, error) {
 		s = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 	case required && env.IsTTY():
 		v, err := env.ReadSecret(prompt)
+		if errors.Is(err, errPromptInterrupted) {
+			return nil, err
+		}
 		if err != nil {
 			return nil, usage("can't read the value from the terminal")
 		}
