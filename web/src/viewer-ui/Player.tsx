@@ -239,16 +239,18 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
     return () => document.removeEventListener("fullscreenchange", on);
   }, []);
 
-  // Controls hide after a while on a live picture; any tap brings them back.
-  // Keyboard focus inside the controls shows them and holds the timer, so a
-  // focused button is never invisible.
+  // Inactivity hides the controls only while watching an unobstructed live picture.
+  const canAutoHide = autoHideMs > 0 && state === "live" && !hud && !drawing;
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusInside = useRef(false);
+  const resetHideTimer = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    if (canAutoHide && !focusInside.current) hideTimer.current = setTimeout(() => setChrome(false), autoHideMs);
+  }, [autoHideMs, canAutoHide]);
   const showChrome = useCallback(() => {
     setChrome(true);
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-    if (autoHideMs > 0 && !focusInside.current) hideTimer.current = setTimeout(() => setChrome(false), autoHideMs);
-  }, [autoHideMs]);
+    resetHideTimer();
+  }, [resetHideTimer]);
   const onControlsFocus = () => {
     focusInside.current = true;
     showChrome();
@@ -256,18 +258,14 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
   const onControlsBlur = (e: ReactFocusEvent<HTMLDivElement>) => {
     if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
     focusInside.current = false;
-    if (state === "live" && !hud) showChrome();
+    resetHideTimer();
   };
   useEffect(() => {
-    if (state === "live" && !hud && !drawing) showChrome();
-    else {
-      if (hideTimer.current) clearTimeout(hideTimer.current);
-      setChrome(true);
-    }
+    showChrome();
     return () => {
       if (hideTimer.current) clearTimeout(hideTimer.current);
     };
-  }, [state, hud, drawing, showChrome]);
+  }, [showChrome]);
 
   // The stage, and the picture's rect in it: the zoom bounds.
   const fillRef = useRef(fill);
@@ -410,7 +408,10 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
   };
   const onMove = (e: RPointerEvent<HTMLDivElement>) => {
     const prev = pointers.current.get(e.pointerId);
-    if (!prev) return;
+    if (!prev) {
+      if (canAutoHide && e.pointerType === "mouse") showChrome();
+      return;
+    }
     const p = local(e);
     pointers.current.set(e.pointerId, p);
     if (stroke.current) {
@@ -452,6 +453,7 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
     const t = tap.current;
     tap.current = null;
     if (!t || t.moved || performance.now() - t.t > 350) return;
+    if (e.pointerType === "mouse") showChrome();
     const now = performance.now();
     if (lastTap.current && now - lastTap.current.t < 320 && distance(lastTap.current.at, p) < 40) {
       lastTap.current = null;
@@ -460,15 +462,11 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
       return;
     }
     lastTap.current = { at: p, t: now };
+    if (!canAutoHide || e.pointerType === "mouse") return;
     if (tapTimer.current) clearTimeout(tapTimer.current);
     tapTimer.current = setTimeout(() => {
-      setChrome((c) => {
-        if (!c || focusInside.current) {
-          showChrome();
-          return true;
-        }
-        return false;
-      });
+      resetHideTimer();
+      setChrome((c) => !c || focusInside.current);
     }, 260);
   };
   const onWheel = (e: WheelEvent<HTMLDivElement>) => {
@@ -478,7 +476,7 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
   };
   useEffect(() => () => {
     if (tapTimer.current) clearTimeout(tapTimer.current);
-  }, []);
+  }, [resetHideTimer]);
 
   const safe = {
     top: "max(0.75rem, env(safe-area-inset-top))",
@@ -487,7 +485,7 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
     right: "max(0.75rem, env(safe-area-inset-right))",
   };
   const bars = qualityBars(quality);
-  const fade = `transition-opacity duration-200 ${chrome ? "opacity-100" : "pointer-events-none opacity-0"}`;
+  const fade = `transition-opacity duration-200 ${chrome || !canAutoHide ? "opacity-100" : "pointer-events-none opacity-0"}`;
 
   return (
     <div

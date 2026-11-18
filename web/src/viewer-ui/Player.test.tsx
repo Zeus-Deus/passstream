@@ -32,6 +32,28 @@ describe("row code", () => {
 });
 
 describe("auto-hide and keyboard focus", () => {
+  it("reveals the controls when a mouse moves over the picture after idle", () => {
+    vi.useFakeTimers();
+    render(<Player state="live" autoHideMs={1000} />);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(controls()).toHaveClass("opacity-0");
+
+    fireEvent.pointerMove(screen.getByTestId("stage"), { pointerType: "mouse" });
+    expect(controls()).toHaveClass("opacity-100");
+    act(() => vi.advanceTimersByTime(1000));
+    expect(controls()).toHaveClass("opacity-0");
+  });
+
+  it.each(["paused", "reconnecting"] as const)("keeps the controls visible after tapping a %s picture", (state) => {
+    vi.useFakeTimers();
+    render(<Player state={state} autoHideMs={1000} />);
+    const stage = screen.getByTestId("stage");
+    fireEvent.pointerDown(stage, { pointerId: 1, pointerType: "touch", clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(stage, { pointerId: 1, pointerType: "touch", clientX: 50, clientY: 50 });
+    act(() => vi.advanceTimersByTime(1100));
+    expect(controls()).toHaveClass("opacity-100");
+  });
+
   it("reveals the controls on focus and holds them while focus is inside", () => {
     vi.useFakeTimers();
     render(
