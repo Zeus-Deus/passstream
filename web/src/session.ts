@@ -6,6 +6,21 @@ import { CatchupGrace, VideoFreshness, decoderLiveness, heartbeatStartupExpired 
 import { addPublisherThumbnail, publisherOffer, publisherStats } from "./thumbnail";
 export type State =
   "waiting" | "connecting" | "live" | "reconnecting" | "ended";
+/**
+ * A poll stamps the sample as current, so it may only carry what that poll
+ * measured. Without the selected pair there is no path to report a round trip
+ * for; without the video report there is no loss, rate or frame rate. Carrying the previous
+ * values forward would present an old loss spike as a fresh reading.
+ */
+export function unmeasuredCleared<T extends Pick<Quality, "path" | "loss" | "bitrate" | "fps">>(q: T, measured: { pair: boolean; video: boolean }): T {
+  const out = { ...q };
+  // The round trip itself stays: recovery pacing reads the last known one.
+  // Without a path the viewer's HUD and signal bars already ignore it.
+  if (!measured.pair) out.path = "—";
+  if (!measured.video) (out.loss = 0), (out.bitrate = 0), (out.fps = 0);
+  return out;
+}
+
 export type Quality = {
   rtt: number;
   loss: number;
@@ -640,11 +655,13 @@ export class Session {
       if (this.heartbeatReady) this.recover(performance.now());
       const pair = selectedPair(stats);
       let q = { ...this.quality, timestamp: Date.now(), frames: this.frames };
+      const measured = { pair: false, video: false };
       for (const s of stats.values()) {
         if (
           s.type === "candidate-pair" &&
           s.id === pair?.id
         ) {
+          measured.pair = true;
           q.rtt = (s.currentRoundTripTime ?? 0) * 1000;
           const local = stats.get(s.localCandidateId),
             remote = stats.get(s.remoteCandidateId);
@@ -659,6 +676,7 @@ export class Session {
           (s.type === "inbound-rtp" || s.type === "outbound-rtp") &&
           s.kind === "video"
         ) {
+          measured.video = true;
           const bytes = s.bytesReceived ?? s.bytesSent ?? 0;
           if (this.stamp && s.timestamp > this.stamp)
             q.bitrate =
@@ -685,6 +703,7 @@ export class Session {
           q.stats = Object.fromEntries(keys.flatMap(k => typeof s[k] === "number" || typeof s[k] === "string" ? [[k,s[k]]] : []));
         }
       }
+      q = unmeasuredCleared(q, measured);
       this.quality = q;
       this.samples.push({ ...q, width: this.video.videoWidth, height: this.video.videoHeight });
       if (this.samples.length > 7200) this.samples.shift();
