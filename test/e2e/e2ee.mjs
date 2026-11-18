@@ -728,10 +728,11 @@ try {
     for (let i = 0; i < 60 && cli(["frame", "--json"]).json?.status !== "frame"; i++) await sleep(100);
     const before = uploadRequests.length;
     const controls = s.page.getByRole("region", { name: "Owner captures" });
-    const snapshot = controls.getByRole("button", { name: "Snapshot → PassFile", exact: true });
+    const snapshot = controls.getByRole("button", { name: "Snapshot → PassFile", exact: true, disabled: false });
     const dialog = s.page.getByRole("dialog", { name: "Confirm publishing" });
     const refuse = dialog.getByRole("button", { name: "Refuse", exact: true });
-    await snapshot.click();
+    await snapshot.focus();
+    await s.page.keyboard.press("Enter");
     await refuse.waitFor();
     if (!await refuse.evaluate(button => document.activeElement === button)) throw Error("Publish prompt did not focus Refuse");
     await s.page.getByTestId("pause").evaluate(button => button.focus());
@@ -739,7 +740,9 @@ try {
     await s.page.keyboard.press("Enter");
     await dialog.waitFor({ state: "hidden" });
     if (uploadRequests.length !== before) throw Error("Refusing the prompt uploaded a capture");
-    await snapshot.click();
+    await snapshot.waitFor();
+    await snapshot.and(s.page.locator(":focus")).waitFor({ timeout: 3000 });
+    await s.page.keyboard.press("Enter");
     await dialog.getByRole("button", { name: "Confirm upload", exact: true }).click();
     await controls.getByRole("link", { name: "Open published capture" }).waitFor();
     const portal = await browser.newPage(); watch(portal, "local-owner");
