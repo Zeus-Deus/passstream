@@ -43,6 +43,16 @@ func runCLI(t *testing.T, stdin string, args ...string) result {
 	return result{code, out.String(), errb.String()}
 }
 
+func TestShareHelpWithoutDaemon(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	for _, args := range [][]string{{"share", "--help"}, {"share", "-h"}, {"start", "--help"}, {"help", "share"}} {
+		r := runCLI(t, "", args...)
+		if r.code != 0 || r.stderr != "" || !strings.Contains(r.stdout, "passstream share [--pin") || !strings.Contains(r.stdout, "Choose a source in the sender window") {
+			t.Errorf("%v: %+v", args, r)
+		}
+	}
+}
+
 func TestUsageNeverEchoesSecrets(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	for _, args := range [][]string{

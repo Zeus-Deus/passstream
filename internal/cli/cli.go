@@ -271,11 +271,23 @@ func NormalizeCode(s string) (string, bool) {
 	return string(b), proto.IsRowCode(string(b))
 }
 
+const shareUsage = `  passstream share [--pin 4-12|none|passphrase] [--pin-stdin|--pin-fd N] [--knock]
+                   [--label L] [--motion] [--no-wait] [--timeout 120s] [--json]
+`
+
+const shareHelp = `Share a screen, window or tab.
+
+` + shareUsage + `
+Choose a source in the sender window. The command prints the link once the
+share is live. Use --no-wait to print the link as soon as it's ready.
+
+--pin sets the PIN policy. For a passphrase, enter it at the hidden prompt
+or supply it with --pin-stdin or --pin-fd.
+`
+
 const help = `passstream: private live screen sharing (local commands talk to the host daemon)
 
-  passstream share [--pin 4|6|none|passphrase] [--pin-stdin|--pin-fd N] [--knock]
-                   [--label L] [--motion] [--no-wait] [--timeout 120s] [--json]
-  passstream stop | pause | resume | lock | unlock
+` + shareUsage + `  passstream stop | pause | resume | lock | unlock
   passstream curtain on|off           (privacy curtain: the pause latch)
   passstream annotations on|off|clear (viewers may draw; host-only by default)
   passstream unfreeze [--keep-pin] [--pin-stdin|--pin-fd N] [--wait]
@@ -309,6 +321,16 @@ func Main(args []string) int { return Run(args, defaultEnv()) }
 
 // Run is Main with an explicit environment.
 func Run(args []string, env *Env) int {
+	if len(args) == 2 {
+		command, option := args[0], args[1]
+		if command == "help" {
+			command, option = option, "--help"
+		}
+		if (command == "share" || command == "start") && (option == "--help" || option == "-h") {
+			fmt.Fprint(env.Stdout, shareHelp)
+			return exitOK
+		}
+	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		fmt.Fprint(env.Stdout, help)
 		if len(args) == 0 {
