@@ -229,6 +229,10 @@ func TestStatusSaysWhenNoServerIsConfigured(t *testing.T) {
 	if strings.Contains(got, "(ok)") || !strings.Contains(got, "server not configured") {
 		t.Errorf("an unconfigured server must not read as ok: %q", got)
 	}
+	// The host reads $XDG_CONFIG_HOME/passstream/config when that is set: the hint must not name only ~/.config.
+	if !strings.Contains(got, "$XDG_CONFIG_HOME/passstream/config") || !strings.Contains(got, "~/.config/passstream/config if that is unset") {
+		t.Errorf("config guidance must name the XDG location and its fallback: %q", got)
+	}
 	daemon["server_url"] = "https://stream.example"
 	if got := humanStatus(map[string]any{"daemon": daemon}); !strings.Contains(got, "server https://stream.example (ok)") {
 		t.Errorf("configured server line changed: %q", got)
