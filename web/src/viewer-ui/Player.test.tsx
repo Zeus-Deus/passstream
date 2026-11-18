@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Player, useWakeLock, WEAK_HOLD_MS } from "./Player";
+import { Player, STALE_SAMPLE_MS, useWakeLock, WEAK_HOLD_MS } from "./Player";
 import { ROW_COLOUR_HEX, rowCodeColour } from "./rowcode";
 
 afterEach(() => {
@@ -196,6 +196,31 @@ describe("weak connection pill", () => {
     act(() => void vi.advanceTimersByTime(1));
     expect(screen.getByTestId("quality-pill")).toHaveTextContent("Weak connection");
     rerender(<Player state="live" quality={FINE} autoHideMs={0} />);
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+  });
+
+  it("doesn't let one weak sample become a warning when sampling stalls", () => {
+    vi.useFakeTimers();
+    const spike = { ...FINE, loss_pct: 14, at: 1000 };
+    const { rerender } = render(<Player state="live" quality={spike} autoHideMs={0} />);
+    // The same measurement keeps being handed over; nothing newer arrives.
+    for (let i = 0; i < 12; i++) {
+      act(() => void vi.advanceTimersByTime(500));
+      rerender(<Player state="live" quality={{ ...spike }} autoHideMs={0} />);
+      expect(screen.queryByTestId("quality-pill")).toBeNull();
+    }
+  });
+
+  it("counts weak samples that keep arriving, and drops the warning when they stop", () => {
+    vi.useFakeTimers();
+    let at = 1000;
+    const { rerender } = render(<Player state="live" quality={{ ...FINE, rtt_ms: 400, at }} autoHideMs={0} />);
+    for (let i = 0; i < 6; i++) {
+      act(() => void vi.advanceTimersByTime(500));
+      rerender(<Player state="live" quality={{ ...FINE, rtt_ms: 400, at: (at += 500) }} autoHideMs={0} />);
+    }
+    expect(screen.getByTestId("quality-pill")).toHaveTextContent("Weak connection");
+    act(() => void vi.advanceTimersByTime(STALE_SAMPLE_MS));
     expect(screen.queryByTestId("quality-pill")).toBeNull();
   });
 

@@ -36,6 +36,8 @@ export interface Quality {
   path: string | null;
   layer: string | null;
   freezes: number;
+  /** When these numbers were measured (epoch ms). Absent: taken as current. */
+  at?: number | null;
   /** Gaps over 500 ms between rendered frames, outside pauses (freezes are the ones with evidence of input). */
   render_gaps?: number;
   /** HUD details (FEATURES.md "Track D2" §1); optional so older callers still fit. */
@@ -78,6 +80,13 @@ export function isDegraded(q: Quality | null | undefined, moving = true) {
  * or pausing reads as 1 fps. Neither lasts, on a perfect link included.
  */
 export const WEAK_HOLD_MS = 3000;
+
+/**
+ * Stats arrive twice a second. Without a new measurement for this long the
+ * last one is history: sampling stalled, and an old loss spike must not grow
+ * into a warning by simply staying on the screen.
+ */
+export const STALE_SAMPLE_MS = 2000;
 
 export type PlayerState = "live" | "paused" | "reconnecting";
 
@@ -224,7 +233,16 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
   const [fsSupported, setFsSupported] = useState(false);
   const wake = useWakeLock(state === "live");
   const moving = state === "live";
-  const weak = isDegraded(quality, moving);
+  // Fresh while measurements keep arriving; each new one restarts the clock.
+  const sampledAt = quality?.at ?? null;
+  const [stale, setStale] = useState(false);
+  useEffect(() => {
+    setStale(false);
+    if (sampledAt === null) return;
+    const t = setTimeout(() => setStale(true), STALE_SAMPLE_MS);
+    return () => clearTimeout(t);
+  }, [sampledAt]);
+  const weak = !stale && isDegraded(quality, moving);
   const [weakHeld, setWeakHeld] = useState(false);
   useEffect(() => {
     if (!weak) return setWeakHeld(false);
