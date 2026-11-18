@@ -427,8 +427,8 @@ func TestPaddingFlightUsesProvenRateAndStandingHeadroom(t *testing.T) {
 	p.probeRate.Store(256_000)
 	p.probeRateAt.Store(now.UnixNano())
 	p.minimumFeedbackRTT.Store(int64(80 * time.Millisecond))
-	// Twice the proof over transit plus one feedback interval is 21KB. The
-	// offered ceiling would allow 412KB.
+	// Transit and one feedback interval at the proof, plus one more interval
+	// of the step above it, is 18.5KB. The offered ceiling would allow 412KB.
 	p.probeCeiling.Store(10_000_000)
 	p.departedBytes.Store(24_000)
 	if !p.flightLimited(10_000_000, true) {
@@ -480,6 +480,39 @@ func TestPaddingFlightCanDeliverItsTrialAtTheLongestFeedbackInterval(t *testing.
 	}
 	if got := paddingFlightRate(2_000_000, 1_789_000); got != 2_000_000 {
 		t.Errorf("an offer below the proof must not shrink the proven window: %d", got)
+	}
+}
+
+// A path with a resident queue and slow feedback: 360ms round trip against an
+// 80ms baseline, 20ms left before the standing-delay cap. The step above the
+// proof must not scale the bytes already in transit; it may add only what the
+// proven rate drains in the headroom that is left.
+func TestPaddingFlightStepIsBoundedByRemainingDelayOnACongestedPath(t *testing.T) {
+	const proof, offered = 256_000, 512_000
+	p := &Pacer{}
+	p.probeRate.Store(proof)
+	p.probeRateAt.Store(time.Now().UnixNano())
+	p.probeCeiling.Store(offered)
+	p.minimumFeedbackRTT.Store(int64(80 * time.Millisecond))
+	p.rtt.Store(int64(360 * time.Millisecond))
+	p.networkExcess.Store(int64(standingDelayLimit - 20*time.Millisecond))
+	// At the proven rate alone: 256kbit/s over 360ms transit + 20ms = 12,160 bytes.
+	const provenOnly = proof * 380 / 1000 / 8
+	p.departedBytes.Store(provenOnly - 1)
+	if p.flightLimited(offered, true) {
+		t.Fatal("the proven flight window was withheld")
+	}
+	// 20ms of headroom at the proven rate is 640 bytes: the whole speculative step.
+	p.departedBytes.Store(provenOnly + 640)
+	if !p.flightLimited(offered, true) {
+		t.Fatal("the step above proof exceeded what the remaining delay budget drains")
+	}
+	if got := paddingFlightLimit(proof, offered, 360*time.Millisecond, 20*time.Millisecond); got != provenOnly+640 {
+		t.Fatalf("limit %d, want %d", got, provenOnly+640)
+	}
+	// The same path with the queue gone keeps the wide window and the full step.
+	if clear := paddingFlightLimit(proof, offered, 80*time.Millisecond, standingDelayLimit); clear != (proof*330/1000+proof*250/1000)/8 {
+		t.Fatalf("clear-path limit %d", clear)
 	}
 }
 
