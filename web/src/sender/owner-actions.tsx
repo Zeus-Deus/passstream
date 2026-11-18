@@ -18,14 +18,22 @@ const ERRORS: Record<string, string> = {
   invalid_argument: "That request was refused. Check the Pass service settings on this machine.",
 };
 
+const explain = (code: string) => ERRORS[code] ?? `That didn't work (${code}).`;
+
 /** What happened, in words. Captures never show their raw reply. */
 export function ownerActionMessage(op: string, r: Reply): string {
-  if (!r.ok) return ERRORS[r.error?.code ?? ""] ?? `That didn't work (${r.error?.code ?? "failed"}).`;
-  if (typeof r.data?.url === "string") return "Published.";
+  if (!r.ok) return explain(r.error?.code ?? "failed");
+  // A reply can succeed and still carry a failure: an upload error from the
+  // Pass service (an object with a code), or a recording error (the code itself).
+  const failure = r.data?.error;
+  const code = typeof failure === "string" ? failure : typeof (failure as { code?: unknown } | undefined)?.code === "string" ? (failure as { code: string }).code : "";
+  if (code) return explain(code);
   if (op === "record.start") return "Recording. It stops by itself after two minutes.";
-  if (op === "record.stop") return "Recording saved on this machine.";
-  if (op === "publish") return r.data?.status === "refused" ? "Not published." : "Done.";
-  return "Done.";
+  if (op === "record.stop") return r.data?.completed === true ? "Recording saved on this machine." : "No recording was saved.";
+  // Only a link means it was published.
+  if (typeof r.data?.url === "string") return "Published.";
+  if (r.data?.status === "timeout") return "The confirmation ran out, so nothing was published.";
+  return "Not published.";
 }
 
 const ACTIONS = [

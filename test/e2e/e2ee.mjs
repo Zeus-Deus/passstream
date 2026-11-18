@@ -727,6 +727,8 @@ try {
     secrets.push({ pin: s.pin, link: s.link });
     for (let i = 0; i < 60 && cli(["frame", "--json"]).json?.status !== "frame"; i++) await sleep(100);
     const before = uploadRequests.length;
+    // Recording and publishing are folded away until asked for.
+    await s.page.getByText("Record and publish", { exact: true }).click();
     const controls = s.page.getByRole("region", { name: "Owner captures" });
     await controls.getByRole("button", { name: "Snapshot → PassFile", exact: true }).click();
     await s.page.getByRole("dialog",{name:"Confirm publishing"}).getByRole("button",{name:"Confirm upload",exact:true}).click();

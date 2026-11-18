@@ -33,4 +33,19 @@ describe("sender window copy", () => {
     expect(ownerActionMessage("publish", { ok: true, data: { url: "https://example.test/p/1" } })).toBe("Published.");
     expect(ownerActionMessage("publish", { ok: false, error: { code: "mystery" } })).toBe("That didn't work (mystery).");
   });
+
+  it("says a recording was saved only when one was", () => {
+    expect(ownerActionMessage("record.stop", { ok: true, data: { recording: false, completed: true, bytes: 4096, error: "" } })).toBe("Recording saved on this machine.");
+    // The privacy curtain erased it: record.stop still answers ok.
+    expect(ownerActionMessage("record.stop", { ok: true, data: { recording: false, completed: false, bytes: 0, error: "" } })).toBe("No recording was saved.");
+    expect(ownerActionMessage("record.stop", { ok: true, data: { completed: false, error: "recording_too_large" } })).toMatch(/too large/);
+  });
+
+  it("reports a publish as published only with a link", () => {
+    expect(ownerActionMessage("publish", { ok: true, data: { status: "refused", uploading: false } })).toBe("Not published.");
+    expect(ownerActionMessage("publish", { ok: true, data: { status: "timeout", uploading: false } })).toMatch(/confirmation ran out/);
+    const failed = ownerActionMessage("publish", { ok: true, data: { status: "approved", uploading: false, error: { code: "upload_failed", message: "Pass service returned HTTP 500" } } });
+    expect(failed).toMatch(/upload failed/i);
+    expect(failed).not.toMatch(/Published|Done/);
+  });
 });
