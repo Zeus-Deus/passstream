@@ -31,7 +31,9 @@ Open <http://127.0.0.1:8080> and sign in using the owner key in `data/owner-key`
 
 ## Share from the local sender
 
-Install Chromium and add the repository's `build` directory to your `PATH`. To use the CLI clipboard commands, install `wl-clipboard` and run them from a Wayland session.
+Use a Linux desktop session with `XDG_RUNTIME_DIR` set. Install Chromium and add the repository's `build` directory to your `PATH`.
+
+To use the CLI clipboard commands, install `wl-clipboard` and run them from a Wayland session.
 
 1. Open **Settings → API keys** in the dashboard. Enter the owner key and choose **Unlock key management**.
 2. Enter a label such as `Local sender`, select the **streams** scope, and choose **Create key**. Copy the new key while it's visible.
@@ -42,6 +44,8 @@ server = http://127.0.0.1:8080
 ```
 
 The daemon reads the server URL at startup. If it was already running when you edited the config, stop any active share and run `passstream shutdown`. Run `passstream status` again until it shows the configured URL.
+
+Run `passstream pin --reveal` in a terminal outside the area you are sharing.
 
 ```sh
 passstream status
