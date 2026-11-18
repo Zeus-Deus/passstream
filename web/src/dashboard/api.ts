@@ -126,7 +126,7 @@ export const api = {
     request<ViewerList>(`/api/v1/streams/${encodeURIComponent(id)}/viewers`),
   history: (id: string, cursor?: string | null) =>
     request<Page<HistoryEntry>>(
-      `/api/v1/streams/${encodeURIComponent(id)}/history?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      `/api/v1/streams/${encodeURIComponent(id)}/history?limit=100&order=newest${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
     ),
   audit: (streamId?: string, cursor?: string | null) =>
     request<Page<AuditEntry>>(

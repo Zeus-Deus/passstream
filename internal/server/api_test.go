@@ -152,6 +152,51 @@ func errCode(v map[string]json.RawMessage) string {
 	_ = json.Unmarshal(v["error"], &e)
 	return e.Code
 }
+
+func TestHistoryPaginationOrder(t *testing.T) {
+	f := setup(t)
+	id, _, _ := f.create(`{"label":"History"}`)
+	for i, row := range []string{"first", "middle", "last"} {
+		at := int64(i + 1)
+		if err := f.s.Store.Record("history", id, at, hostview.HistoryEntry{RowID: row, LastAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"default", "", []string{"first", "middle", "last"}},
+		{"oldest", "&order=oldest", []string{"first", "middle", "last"}},
+		{"newest", "&order=newest", []string{"last", "middle", "first"}},
+		{"newest with since", "&order=newest&since=2", []string{"last", "middle"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := "/api/v1/streams/" + id + "/history?limit=1" + tc.query
+			var next *string
+			for i, want := range tc.want {
+				url := path
+				if next != nil {
+					url += "&cursor=" + *next
+				}
+				status, data, _ := f.request("GET", url, f.key, "")
+				var rows []hostview.HistoryEntry
+				if status != 200 || json.Unmarshal(data["entries"], &rows) != nil || len(rows) != 1 || rows[0].RowID != want {
+					t.Fatalf("page %d: expected %s, got %d %v", i+1, want, status, data)
+				}
+				if err := json.Unmarshal(data["next_cursor"], &next); err != nil || (next != nil) != (i < len(tc.want)-1) {
+					t.Fatalf("page %d: invalid cursor %s", i+1, data["next_cursor"])
+				}
+			}
+		})
+	}
+	status, data, _ := f.request("GET", "/api/v1/streams/"+id+"/history?order=invalid", f.key, "")
+	if status != 400 || errCode(data) != "invalid_argument" {
+		t.Fatal(status, data)
+	}
+}
+
 func TestEndpointsAndAuthentication(t *testing.T) {
 	f := setup(t)
 	id, _, _ := f.create(`{"label":"Test"}`)
