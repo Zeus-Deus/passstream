@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/passstream/passstream/internal/host/daemon"
@@ -143,8 +144,7 @@ func TestHostConfigErrorIsOneJSONDocument(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(conf, "config"), []byte("server = http://stream.invalid\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// An invalid config fails before the five-second socket retry window.
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHostConfigErrorIsOneJSONDocument$")
 	cmd.Env = append(os.Environ(), configErrorHelper+"=1", "XDG_RUNTIME_DIR="+root, "XDG_STATE_HOME="+root, "XDG_CONFIG_HOME="+root)
@@ -160,6 +160,35 @@ func TestHostConfigErrorIsOneJSONDocument(t *testing.T) {
 	if body.Error.Code != "daemon_unreachable" || !strings.Contains(body.Error.Message, "plain http is allowed only on loopback") {
 		t.Fatalf("unexpected error: %+v", body.Error)
 	}
+}
+
+func TestLaunchAndDialWaitsForSocketAfterLauncherFailure(t *testing.T) {
+	rt := filepath.Join(t.TempDir(), "passstream")
+	if err := os.Mkdir(rt, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(rt, "host.sock")
+	synctest.Test(t, func(t *testing.T) {
+		c, err := launchAndDial(sock, func() error {
+			// The independently started listener appears after the first probe.
+			time.AfterFunc(50*time.Millisecond, func() {
+				ln, listenErr := net.Listen("unix", sock)
+				if listenErr != nil {
+					t.Error(listenErr)
+					return
+				}
+				t.Cleanup(func() { ln.Close() })
+				if chmodErr := os.Chmod(sock, 0o600); chmodErr != nil {
+					t.Error(chmodErr)
+				}
+			})
+			return errors.New("launcher failed")
+		})
+		if err != nil {
+			t.Fatalf("expected to connect to the independently started daemon: %v", err)
+		}
+		c.Close()
+	})
 }
 
 func TestCLIAgainstDaemon(t *testing.T) {

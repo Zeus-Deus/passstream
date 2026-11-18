@@ -71,21 +71,14 @@ func dial(spawn bool) (*conn, error) {
 		return nil, err
 	}
 	c, err := tryDial(sock)
-	if err != nil && spawn {
-		startErr := startDaemon()
-		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-			if c, err = tryDial(sock); err == nil {
-				break
-			}
-			// The launcher already waited for its socket if it got that far.
-			// One retry allows a concurrent daemon to win a startup race.
-			if startErr != nil {
-				return nil, startErr
-			}
-		}
-	}
 	if err != nil {
-		return nil, errUnreachable
+		if !spawn {
+			return nil, errUnreachable
+		}
+		c, err = launchAndDial(sock, startDaemon)
+		if err != nil {
+			return nil, err
+		}
 	}
 	cn := &conn{c: c, waiting: map[string]chan proto.Reply{}, events: make(chan proto.Event, 256), closed: make(chan struct{})}
 	go cn.read()
@@ -94,6 +87,20 @@ func dial(spawn bool) (*conn, error) {
 		return nil, err
 	}
 	return cn, nil
+}
+
+func launchAndDial(sock string, launch func() error) (net.Conn, error) {
+	startErr := launch()
+	// A separately started daemon can become ready even if this launch failed.
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if c, err := tryDial(sock); err == nil {
+			return c, nil
+		}
+	}
+	if startErr != nil {
+		return nil, startErr
+	}
+	return nil, errUnreachable
 }
 
 // startDaemon keeps launcher diagnostics in the CLI's chosen output format.
