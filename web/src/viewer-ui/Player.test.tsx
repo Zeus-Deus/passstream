@@ -13,6 +13,12 @@ afterEach(() => {
 
 const controls = () => screen.getByRole("button", { name: "Connection details" }).closest(".transition-opacity")!;
 
+function tapPicture(stage: HTMLElement) {
+  const touch = { pointerId: 1, pointerType: "touch", clientX: 50, clientY: 50 };
+  fireEvent.pointerDown(stage, touch);
+  fireEvent.pointerUp(stage, touch);
+}
+
 describe("row code", () => {
   it("is a tappable button with its colour at every width, repeated in the HUD", () => {
     render(<Player state="live" rowCode="K7P" autoHideMs={0} />);
@@ -44,12 +50,27 @@ describe("auto-hide and keyboard focus", () => {
     expect(controls()).toHaveClass("opacity-0");
   });
 
+  it("keeps controls visible until the mouse is idle after a queued tap", () => {
+    vi.useFakeTimers();
+    render(<Player state="live" autoHideMs={1000} />);
+    const stage = screen.getByTestId("stage");
+    act(() => vi.advanceTimersByTime(1000));
+    expect(controls()).toHaveClass("opacity-0");
+
+    tapPicture(stage);
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.pointerMove(stage, { pointerId: 2, pointerType: "mouse" });
+    expect(controls()).toHaveClass("opacity-100");
+    act(() => vi.advanceTimersByTime(999));
+    expect(controls()).toHaveClass("opacity-100");
+    act(() => vi.advanceTimersByTime(1));
+    expect(controls()).toHaveClass("opacity-0");
+  });
+
   it.each(["paused", "reconnecting"] as const)("keeps the controls visible after tapping a %s picture", (state) => {
     vi.useFakeTimers();
     render(<Player state={state} autoHideMs={1000} />);
-    const stage = screen.getByTestId("stage");
-    fireEvent.pointerDown(stage, { pointerId: 1, pointerType: "touch", clientX: 50, clientY: 50 });
-    fireEvent.pointerUp(stage, { pointerId: 1, pointerType: "touch", clientX: 50, clientY: 50 });
+    tapPicture(screen.getByTestId("stage"));
     act(() => vi.advanceTimersByTime(1100));
     expect(controls()).toHaveClass("opacity-100");
   });
@@ -84,6 +105,18 @@ describe("auto-hide and keyboard focus", () => {
 });
 
 describe("gestures", () => {
+  it("zooms on a double tap with mouse movement between taps", () => {
+    vi.useFakeTimers();
+    render(<Player state="live" autoHideMs={1000} />);
+    const stage = screen.getByTestId("stage");
+    tapPicture(stage);
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.pointerMove(stage, { pointerId: 2, pointerType: "mouse" });
+    tapPicture(stage);
+
+    expect(screen.getByTestId("zoom-layer")).toHaveAttribute("data-scale", "2.50");
+  });
+
   it("lifting one finger of a pinch leaves the other panning", () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
       { left: 0, top: 0, width: 400, height: 300, right: 400, bottom: 300, x: 0, y: 0, toJSON() {} } as DOMRect,

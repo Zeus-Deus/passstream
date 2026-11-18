@@ -242,15 +242,21 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
   // Inactivity hides the controls only while watching an unobstructed live picture.
   const canAutoHide = autoHideMs > 0 && state === "live" && !hud && !drawing;
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tapToggleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusInside = useRef(false);
+  const cancelTapToggle = useCallback(() => {
+    if (tapToggleTimer.current !== null) clearTimeout(tapToggleTimer.current);
+    tapToggleTimer.current = null;
+  }, []);
   const resetHideTimer = useCallback(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
     if (canAutoHide && !focusInside.current) hideTimer.current = setTimeout(() => setChrome(false), autoHideMs);
   }, [autoHideMs, canAutoHide]);
   const showChrome = useCallback(() => {
+    cancelTapToggle();
     setChrome(true);
     resetHideTimer();
-  }, [resetHideTimer]);
+  }, [cancelTapToggle, resetHideTimer]);
   const onControlsFocus = () => {
     focusInside.current = true;
     showChrome();
@@ -264,8 +270,9 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
     showChrome();
     return () => {
       if (hideTimer.current) clearTimeout(hideTimer.current);
+      cancelTapToggle();
     };
-  }, [showChrome]);
+  }, [cancelTapToggle, showChrome]);
 
   // The stage, and the picture's rect in it: the zoom bounds.
   const fillRef = useRef(fill);
@@ -369,7 +376,6 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
   const pinch = useRef<{ dist: number; mid: Point; view: View } | null>(null);
   const tap = useRef<{ start: Point; t: number; moved: boolean } | null>(null);
   const lastTap = useRef<{ at: Point; t: number } | null>(null);
-  const tapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Draw mode: a stage point → frame coordinates (zoom undone, letterbox/crop applied).
   const stroke = useRef(false);
@@ -457,14 +463,15 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
     const now = performance.now();
     if (lastTap.current && now - lastTap.current.t < 320 && distance(lastTap.current.at, p) < 40) {
       lastTap.current = null;
-      if (tapTimer.current) clearTimeout(tapTimer.current);
+      cancelTapToggle();
       setView((v) => toggleZoom(v, p, size()));
       return;
     }
     lastTap.current = { at: p, t: now };
     if (!canAutoHide || e.pointerType === "mouse") return;
-    if (tapTimer.current) clearTimeout(tapTimer.current);
-    tapTimer.current = setTimeout(() => {
+    cancelTapToggle();
+    tapToggleTimer.current = setTimeout(() => {
+      tapToggleTimer.current = null;
       resetHideTimer();
       setChrome((c) => !c || focusInside.current);
     }, 260);
@@ -474,9 +481,6 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
     const s = size();
     setView((v) => zoomTo(v, v.scale * Math.exp(-e.deltaY * 0.0015), p, s));
   };
-  useEffect(() => () => {
-    if (tapTimer.current) clearTimeout(tapTimer.current);
-  }, [resetHideTimer]);
 
   const safe = {
     top: "max(0.75rem, env(safe-area-inset-top))",
