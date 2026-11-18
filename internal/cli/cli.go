@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -125,10 +126,13 @@ type opts struct {
 
 // parse reads flags anywhere among the arguments. A value-looking --pin is
 // refused without echoing it (CONTRACT §12).
-func parse(args []string) (*opts, error) {
+func parse(args []string, shareHelpEnabled bool) (*opts, error) {
 	o := &opts{pinFD: -1, timeout: 120 * time.Second}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if shareHelpEnabled && (a == "--help" || a == "-h") {
+			return nil, flag.ErrHelp
+		}
 		name, val, hasVal := a, "", false
 		if strings.HasPrefix(a, "--") {
 			if k, v, ok := strings.Cut(a, "="); ok {
@@ -321,15 +325,9 @@ func Main(args []string) int { return Run(args, defaultEnv()) }
 
 // Run is Main with an explicit environment.
 func Run(args []string, env *Env) int {
-	if len(args) == 2 {
-		command, option := args[0], args[1]
-		if command == "help" {
-			command, option = option, "--help"
-		}
-		if (command == "share" || command == "start") && (option == "--help" || option == "-h") {
-			fmt.Fprint(env.Stdout, shareHelp)
-			return exitOK
-		}
+	if len(args) == 2 && args[0] == "help" && (args[1] == "share" || args[1] == "start") {
+		fmt.Fprint(env.Stdout, shareHelp)
+		return exitOK
 	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		fmt.Fprint(env.Stdout, help)
@@ -346,7 +344,11 @@ func Run(args []string, env *Env) int {
 	if cmd == serveCommand {
 		return clipboardServe(args[1:], env)
 	}
-	o, err := parse(args[1:])
+	o, err := parse(args[1:], cmd == "share" || cmd == "start")
+	if err == flag.ErrHelp {
+		fmt.Fprint(env.Stdout, shareHelp)
+		return exitOK
+	}
 	if err == nil {
 		err = run(cmd, o, env)
 	}
