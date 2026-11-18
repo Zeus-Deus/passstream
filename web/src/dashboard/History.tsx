@@ -205,12 +205,12 @@ export function History({ stream }: { stream: string | null }) {
       {stream && (
         <section className="mb-10" aria-labelledby="h-viewers">
           <h2 id="h-viewers" className="label mb-3">Viewer history</h2>
-          <HistoryList stream={stream} />
+          <HistoryList key={stream} stream={stream} />
         </section>
       )}
       <section aria-labelledby="h-audit">
         <h2 id="h-audit" className="label mb-3">Audit log</h2>
-        <AuditList stream={stream} />
+        <AuditList key={stream ?? ""} stream={stream} />
       </section>
     </>
   );

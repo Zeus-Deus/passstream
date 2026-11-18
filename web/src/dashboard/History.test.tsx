@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "./api";
 import { stream } from "./fixtures";
 import { History } from "./History";
+import type { AuditEntry, HistoryEntry } from "./types";
 
 afterEach(() => {
   cleanup();
@@ -56,4 +57,43 @@ it("keeps recent choices available and retries the same page after a failed requ
   await screen.findByRole("option", { name: /^Last week ·/ });
   expect(pages.mock.calls.map(([, cursor]) => cursor)).toEqual([null, "next", "next"]);
   expect(detail).not.toHaveBeenCalled();
+});
+
+it("ignores More responses from the previous stream in viewer history and audit", async () => {
+  const a = stream({ id: "a" });
+  const b = stream({ id: "b" });
+  vi.spyOn(api, "streams").mockResolvedValue({ streams: [a, b], next_cursor: null });
+  const viewerRow = (code: string): HistoryEntry => ({
+    row_id: code, row_code: code, viewer_id: null, admission_ids: [],
+    first_at: 1, last_at: 2, end: "left", connections: [],
+  });
+  const auditRow = (id: string | null, op: string): AuditEntry => ({
+    id: op, at: 1, stream_id: id, actor: { kind: "server", key_id: null },
+    op, target: {}, result: "ok", error_code: null, idempotency_key: null,
+  });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  vi.spyOn(api, "history").mockImplementation(async (id, cursor) => {
+    if (cursor) await pending;
+    const code = id === b.id ? "K7P" : cursor ? "M3X" : "PFT";
+    return { entries: [viewerRow(code)], next_cursor: cursor ? null : id };
+  });
+  vi.spyOn(api, "audit").mockImplementation(async (id, cursor) => {
+    if (cursor) await pending;
+    const op = id === b.id ? "stop" : cursor ? "kick" : "lock";
+    return { entries: [auditRow(id ?? null, op)], next_cursor: cursor ? null : "next" };
+  });
+
+  const { rerender } = render(<History stream={a.id} />);
+  const buttons = await screen.findAllByRole("button", { name: "More" });
+  expect(buttons).toHaveLength(2);
+  buttons.forEach((button) => fireEvent.click(button));
+  rerender(<History stream={b.id} />);
+  await screen.findByText("K7P");
+  await screen.findByText("Stop");
+  await act(async () => { release(); await pending; });
+
+  expect.soft(screen.queryByText("M3X")).toBeNull();
+  expect.soft(screen.queryByText("Kick")).toBeNull();
+  expect(screen.queryAllByRole("button", { name: "More" })).toHaveLength(2);
 });
