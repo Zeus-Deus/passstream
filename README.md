@@ -46,6 +46,10 @@ passstream stop
 
 `--pin 4` chooses a four-digit PIN policy. Pick a screen, window or tab in the browser picker. Send the link and PIN separately. Disabling the PIN requires an explicit `--pin none`.
 
+**To share one window on Omarchy**, choose **Window** in Chromium. Omarchy’s picker opens on **Outputs** by default. Select **Windows** and click the preview of the window you want. Back in Chromium, confirm the preview and click **Share**. You can then switch workspaces while viewers keep seeing the selected window.
+
+Omarchy’s preview picker currently offers **Windows**, **Outputs** and **Region**. Outputs and regions follow whatever is visible on that monitor when you switch workspaces. On systems using Hyprland’s workspace-capable bundled picker, choose **Workspaces** to keep sharing a specific workspace. Omarchy’s picker tracks [workspace support upstream](https://github.com/WhySoBad/hyprland-preview-share-picker/issues/31).
+
 ## What is included
 
 - Browser sharing, reconnect handling and per-viewer media forwarding.
