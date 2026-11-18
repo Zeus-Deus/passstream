@@ -72,6 +72,11 @@ test("every dashboard screen renders against the real server", async ({ page }, 
   await expect(page.getByRole("heading", { name: "Defaults for new streams" })).toBeVisible();
   await expect(page.getByTestId("max-viewers")).toHaveValue("100");
   await noHorizontalOverflow(page);
+  // Next to their wrapping labels the checkboxes keep their 20 px square, down to 320 px.
+  for (const box of [page.getByRole("checkbox", { name: /Knock to join/ }), page.getByTestId("keep-ip")]) {
+    const { width, height } = (await box.boundingBox())!;
+    expect([Math.round(width), Math.round(height)]).toEqual([20, 20]);
+  }
   await shot(page, info, "dashboard-settings", true);
 });
 
