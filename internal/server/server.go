@@ -146,7 +146,7 @@ func (s *Server) Handler() http.Handler {
 	s.routes(mux)
 	mux.HandleFunc("GET /signal", s.signal)
 	dist, _ := fs.Sub(web.Dist, "dist")
-	files := http.FileServer(http.FS(dist))
+	files := publicAssets(dist)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
 			files.ServeHTTP(w, r)
