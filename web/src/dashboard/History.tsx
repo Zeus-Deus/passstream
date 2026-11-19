@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { dateTime, durationShort, place } from "./format";
 import { href, Link, navigate } from "./router";
 import { mergeStreams } from "./Streams";
 import type { AuditEntry, HistoryEntry, Stream } from "./types";
 import { Badge, Empty, Loading, Notice, PageHead, RowCodeChip } from "./ui";
+import type { Page } from "./types";
 
 const END: Record<string, string> = {
   left: "Left",
@@ -31,43 +32,51 @@ const OPS: Record<string, string> = {
   "knock.deny": "Deny knock",
 };
 
-function useAll<T>(load: (cursor: string | null) => Promise<{ entries: T[]; next_cursor: string | null }>, deps: unknown[]) {
-  const [rows, setRows] = useState<T[] | null>(null);
-  const [next, setNext] = useState<string | null>(null);
+function usePages<T, S>(load: (stream: S, cursor: string | null) => Promise<Page<T>>, stream: S) {
+  const [page, setPage] = useState<Page<T> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const pending = useRef<Promise<Page<T>> | null>(null);
   useEffect(() => {
     let off = false;
-    setRows(null);
-    load(null).then(
-      (r) => {
-        if (off) return;
-        setRows(r.entries);
-        setNext(r.next_cursor);
-      },
-      (e: ApiError) => !off && setError(e.message),
+    load(stream, null).then(
+      (r) => { if (!off) setPage(r); },
+      (e: ApiError) => { if (!off) setError(e.message); },
     );
     return () => {
       off = true;
+      pending.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  }, [load, stream]);
   const more = async () => {
-    const r = await load(next);
-    setRows((p) => [...(p ?? []), ...r.entries]);
-    setNext(r.next_cursor);
+    if (!page?.next_cursor || pending.current) return;
+    const request = load(stream, page.next_cursor);
+    pending.current = request;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const r = await request;
+      if (pending.current === request) setPage({ entries: [...page.entries, ...r.entries], next_cursor: r.next_cursor });
+    } catch (e) {
+      if (pending.current === request) setError(e instanceof Error ? e.message : "Couldn't load more entries.");
+    } finally {
+      if (pending.current === request) {
+        pending.current = null;
+        setLoadingMore(false);
+      }
+    }
   };
-  return { rows, next, error, more };
+  return { rows: page?.entries, next: page?.next_cursor, error, loadingMore, more };
 }
 
 function HistoryList({ stream }: { stream: string }) {
-  const { rows, next, error, more } = useAll<HistoryEntry>((c) => api.history(stream, c), [stream]);
-  if (error) return <Notice tone="stamp">{error}</Notice>;
-  if (!rows) return <Loading />;
+  const { rows, next, error, loadingMore, more } = usePages<HistoryEntry, string>(api.history, stream);
+  if (!rows) return error ? <Notice tone="stamp" role="alert">{error}</Notice> : <Loading />;
   if (!rows.length) return <Empty>No one has left this stream yet.</Empty>;
   return (
     <>
       <ul className="space-y-2" data-testid="history">
-        {[...rows].reverse().map((h) => {
+        {rows.map((h) => {
           const c = h.connections[0];
           return (
             <li key={`${h.row_id}-${h.last_at}`} className="sheet flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-3 text-[0.86rem]">
@@ -84,16 +93,16 @@ function HistoryList({ stream }: { stream: string }) {
           );
         })}
       </ul>
-      {next && <button type="button" className="btn mt-3" onClick={more}>More</button>}
+      {next && <button type="button" className="btn mt-3" onClick={more} disabled={loadingMore}>More</button>}
+      {error && <Notice tone="stamp" role="alert">{error}</Notice>}
       <p className="mt-2 text-[0.76rem] text-ink-mute">Newest first. IPs show only when the owner opted in to keep them.</p>
     </>
   );
 }
 
 function AuditList({ stream }: { stream: string | null }) {
-  const { rows, next, error, more } = useAll<AuditEntry>((c) => api.audit(stream ?? undefined, c), [stream]);
-  if (error) return <Notice tone="stamp">{error}</Notice>;
-  if (!rows) return <Loading />;
+  const { rows, next, error, loadingMore, more } = usePages<AuditEntry, string | undefined>(api.audit, stream ?? undefined);
+  if (!rows) return error ? <Notice tone="stamp" role="alert">{error}</Notice> : <Loading />;
   if (!rows.length) return <Empty>No audit entries.</Empty>;
   return (
     <>
@@ -132,7 +141,8 @@ function AuditList({ stream }: { stream: string | null }) {
           </tbody>
         </table>
       </div>
-      {next && <button type="button" className="btn mt-3" onClick={more}>More</button>}
+      {next && <button type="button" className="btn mt-3" onClick={more} disabled={loadingMore}>More</button>}
+      {error && <Notice tone="stamp" role="alert">{error}</Notice>}
       <p className="mt-2 text-[0.76rem] text-ink-mute">
         The server's audit covers what reaches the server. Commands from the bar plugin, CLI or sender window never pass through it.
       </p>

@@ -421,11 +421,16 @@ func (s *Server) connections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"connections": cs, "meta": map[string]string{"geoip_attribution": geoAttribution}})
 }
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
+	order := r.URL.Query().Get("order")
+	if order != "" && order != "oldest" && order != "newest" {
+		fail(w, "invalid_argument")
+		return
+	}
 	_, l, ok := s.load(w, r)
 	if ok {
 		l.mu.Unlock()
 		s.release(l)
-		s.records(w, r, "history", r.PathValue("id"), false)
+		s.records(w, r, "history", r.PathValue("id"), order == "newest")
 	}
 }
 func (s *Server) auditList(w http.ResponseWriter, r *http.Request) {
@@ -447,23 +452,25 @@ func (s *Server) records(w http.ResponseWriter, r *http.Request, kind, id string
 		rows = rows[:limit]
 		next = cursor(rows[len(rows)-1].Seq)
 	}
+	redactIP := false
+	if kind == "history" && len(rows) > 0 {
+		cfg, e := s.Store.Settings()
+		if e != nil {
+			fail(w, "internal")
+			return
+		}
+		redactIP = !cfg.Retention.KeepIP && !s.cfg.KeepIP
+	}
 	out := []json.RawMessage{}
 	for _, row := range rows {
 		body := row.Body
-		if kind == "history" {
-			cfg, e := s.Store.Settings()
-			if e != nil {
-				fail(w, "internal")
-				return
-			}
-			if !cfg.Retention.KeepIP && !s.cfg.KeepIP {
-				var h hostview.HistoryEntry
-				if json.Unmarshal(body, &h) == nil {
-					for i := range h.Connections {
-						h.Connections[i].IP = nil
-					}
-					body, _ = json.Marshal(h)
+		if redactIP {
+			var h hostview.HistoryEntry
+			if json.Unmarshal(body, &h) == nil {
+				for i := range h.Connections {
+					h.Connections[i].IP = nil
 				}
+				body, _ = json.Marshal(h)
 			}
 		}
 		out = append(out, body)

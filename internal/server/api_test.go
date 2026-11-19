@@ -152,6 +152,93 @@ func errCode(v map[string]json.RawMessage) string {
 	_ = json.Unmarshal(v["error"], &e)
 	return e.Code
 }
+
+func TestHistoryPaginationOrder(t *testing.T) {
+	f := setup(t)
+	id, _, _ := f.create(`{"label":"History"}`)
+	for i, row := range []string{"first", "middle", "last"} {
+		at := int64(i + 1)
+		if err := f.s.Store.Record("history", id, at, hostview.HistoryEntry{RowID: row, LastAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"default", "", []string{"first", "middle", "last"}},
+		{"oldest", "&order=oldest", []string{"first", "middle", "last"}},
+		{"newest", "&order=newest", []string{"last", "middle", "first"}},
+		{"newest with since", "&order=newest&since=2", []string{"last", "middle"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := "/api/v1/streams/" + id + "/history?limit=1" + tc.query
+			var next *string
+			for i, want := range tc.want {
+				url := path
+				if next != nil {
+					url += "&cursor=" + *next
+				}
+				status, data, _ := f.request("GET", url, f.key, "")
+				var rows []hostview.HistoryEntry
+				if status != 200 || json.Unmarshal(data["entries"], &rows) != nil || len(rows) != 1 || rows[0].RowID != want {
+					t.Fatalf("page %d: expected %s, got %d %v", i+1, want, status, data)
+				}
+				if err := json.Unmarshal(data["next_cursor"], &next); err != nil || (next != nil) != (i < len(tc.want)-1) {
+					t.Fatalf("page %d: invalid cursor %s", i+1, data["next_cursor"])
+				}
+			}
+		})
+	}
+	status, data, _ := f.request("GET", "/api/v1/streams/"+id+"/history?order=invalid", f.key, "")
+	if status != 400 || errCode(data) != "invalid_argument" {
+		t.Fatal(status, data)
+	}
+}
+
+func TestNewestHistoryRespectsIPRetention(t *testing.T) {
+	f := setup(t)
+	id, _, _ := f.create(`{"label":"History"}`)
+	ip := "192.0.2.15"
+	at := time.Now().UnixMilli()
+	entry := hostview.HistoryEntry{
+		RowID:       "viewer",
+		LastAt:      at,
+		Connections: []hostview.HistoryConnection{{IP: &ip}},
+	}
+	if err := f.s.Store.Record("history", id, at, entry); err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/api/v1/streams/" + id + "/history?order=newest&limit=1"
+	settings := store.DefaultSettings()
+	for _, tc := range []struct {
+		keepIP bool
+		wantIP string
+	}{
+		{false, "null"},
+		{true, fmt.Sprintf("%q", ip)},
+	} {
+		settings.Retention.KeepIP = tc.keepIP
+		if err := f.s.Store.Put("settings", settings); err != nil {
+			t.Fatal(err)
+		}
+		status, data, _ := f.request("GET", path, f.key, "")
+		var rows []struct {
+			Connections []struct {
+				IP json.RawMessage `json:"ip"`
+			} `json:"connections"`
+		}
+		if status != http.StatusOK || json.Unmarshal(data["entries"], &rows) != nil || len(rows) != 1 || len(rows[0].Connections) != 1 {
+			t.Fatalf("keep_ip=%t: expected one history connection, got status %d and %v", tc.keepIP, status, data)
+		}
+		if got := string(rows[0].Connections[0].IP); got != tc.wantIP {
+			t.Errorf("keep_ip=%t: ip = %q, want %q", tc.keepIP, got, tc.wantIP)
+		}
+	}
+}
+
 func TestEndpointsAndAuthentication(t *testing.T) {
 	f := setup(t)
 	id, _, _ := f.create(`{"label":"Test"}`)
