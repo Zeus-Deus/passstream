@@ -5,11 +5,11 @@ import { ViewerController } from "./controller";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-async function setup(knock = false) {
+async function setup(knock = false, storage?: Pick<Storage, "getItem" | "setItem">) {
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
   const h = await makeHost({ now: Date.now, knock });
   const data = new Map<string, string>();
-  vi.stubGlobal("sessionStorage", { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => data.set(k, v) });
+  vi.stubGlobal("sessionStorage", storage ?? { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => data.set(k, v) });
   let peer = "initial";
   const pending: Uint8Array[] = [];
   const create = () => {
@@ -34,19 +34,53 @@ async function setup(knock = false) {
   };
   const initial = create(); joined(initial); initial.submitPin(PIN); await pump(initial);
   if (!knock) expect(initial.admitted).toBe(true);
+  const reconnect = async (c: ViewerController) => {
+    await h.host.peerClosed(peer); peer = "replacement";
+    joined(c);
+  };
   const reload = async () => {
     const id = h.idOf(peer);
-    await h.host.peerClosed(peer); peer = "replacement";
-    const c = create(); joined(c);
+    const c = create(); await reconnect(c);
     await h.host.receive(peer, pending.shift()!);
     await c["receive"](toBase64Url(h.take(peer)[0]!));
     expect(c["adm"]?.state).toBe("response_sent");
     return { c, id };
   };
-  return { h, initial, create, joined, pump, reload, pending, peer: () => peer };
+  return { h, initial, create, joined, pump, reconnect, reload, pending, peer: () => peer };
 }
 
 describe("admission progress with real CPace and the real controller", () => {
+  it.each(["blocked", "full"] as const)("resumes an open viewer with its grant when session storage is %s", async (failure) => {
+    let saved: string | null = null;
+    const s = await setup(false, {
+      getItem: () => {
+        if (failure === "blocked") throw new DOMException("Blocked", "SecurityError");
+        return saved;
+      },
+      setItem: (_key, value) => {
+        if (failure === "blocked") throw new DOMException("Blocked", "SecurityError");
+        if (saved !== null) throw new DOMException("Full", "QuotaExceededError");
+        saved = value; // The initial viewer ID fits, but saving its grant fails.
+      },
+    });
+    const c = s.initial;
+    const code = c.rowCode;
+    await s.reconnect(c);
+    await s.pump(c);
+    expect(c.view.kind).toBe("media");
+    expect(c.rowCode).toBe(code);
+    expect(c.events.filter((e) => e.kind === "admitted").map((e) => e.detail)).toEqual(["pin", "grant"]);
+  });
+
+  it("shows the removal if the host revoked the open viewer's grant before reconnect", async () => {
+    const s = await setup();
+    await s.h.host.kickAndRotatePin(s.h.idOf(s.peer()), "1357");
+    await s.reconnect(s.initial);
+    await s.pump(s.initial);
+    expect(s.initial.view).toEqual({ kind: "removed", reason: "kicked" });
+    expect(s.initial.events.some((e) => e.kind === "refused" && e.detail === "grant_invalid")).toBe(true);
+  });
+
   it("keeps an unanswered PIN HELLO waiting through a known offline interval and checks on return", async () => {
     const s = await setup();
     sessionStorage.setItem(`ps:viewer:${STREAM}`, JSON.stringify({ sid: toBase64Url(new Uint8Array(16).fill(9)) }));

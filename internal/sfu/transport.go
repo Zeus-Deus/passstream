@@ -153,8 +153,7 @@ func (p *Pacer) flightLimited(rate int64, padding bool) bool {
 			return true
 		}
 		transit := max(baseline, min(time.Duration(p.rtt.Load()), baseline+2*standingDelayLimit))
-		limit := max(int64(wireMTU), int64(float64(proof)*(transit+min(200*time.Millisecond, headroom)).Seconds()/8))
-		return p.departedBytes.Load()-p.acknowledgedBytes.Load() >= limit
+		return p.departedBytes.Load()-p.acknowledgedBytes.Load() >= paddingFlightLimit(proof, p.probeCeiling.Load(), transit, headroom)
 	} else if time.Now().UnixNano() >= p.probeUntil.Load() {
 		rate = min(rate, proof*125/100)
 	}
@@ -163,6 +162,38 @@ func (p *Pacer) flightLimited(rate int64, padding bool) bool {
 	// Sparse screens retain sixteen MTUs; congestion-inflated RTT is excluded.
 	limit := max(minimum, int64(float64(rate)*(baseline+100*time.Millisecond).Seconds()/8))
 	return p.departedBytes.Load()-p.acknowledgedBytes.Load() >= limit
+}
+
+// Flight is released only by transport feedback, so a trial delivers at most
+// one flight window per feedback interval. A receiver of the low rendition
+// reports about every 250ms (libwebrtc's longest interval). A 200ms window at
+// exactly the proven rate therefore delivers under that rate: no trial could
+// raise the proof, and a viewer whose first estimate landed below a native
+// key's cost stayed on the low rendition for good.
+const paddingFlightWindow = 250 * time.Millisecond
+
+// What is already in transit, and one feedback window of new work, fly at the
+// proven rate. Only the step above it is speculative: at most the proven rate
+// again, never more than the trial was asked to offer, and no more bytes than
+// the proven rate drains within the remaining standing-delay headroom. A path
+// already near that cap therefore gains almost nothing, however long its round
+// trip is, while a clear path can deliver the whole offered rate.
+func paddingFlightLimit(proof, ceiling int64, transit, headroom time.Duration) int64 {
+	window := min(paddingFlightWindow, headroom)
+	proven := float64(proof) * (transit + window).Seconds() / 8
+	step := float64(paddingFlightRate(proof, ceiling)-proof) * window.Seconds() / 8
+	step = min(step, float64(proof)*headroom.Seconds()/8)
+	return max(int64(wireMTU), int64(proven+step))
+}
+
+// The rate a trial may reach: twice the proof, within what it offers. An
+// unproven ceiling far above the proof is not borrowed.
+func paddingFlightRate(proof, ceiling int64) int64 {
+	step := proof * 2
+	if ceiling > 0 {
+		step = min(step, max(proof, ceiling))
+	}
+	return step
 }
 
 // Match Pion's feedback RTT calculation, using the actual paced wire writes.

@@ -230,7 +230,12 @@ export class ViewerController {
   private onSignal(m: Record<string, unknown>) {
     switch (m.type) {
       case "joined": {
-        this.streamId = String(m.stream_id ?? "");
+        const streamId = String(m.stream_id ?? "");
+        if (!this.stored || streamId !== this.streamId) {
+          this.streamId = streamId;
+          // A reconnect can still use the open page's grant if storage refused its write.
+          this.load();
+        }
         this.connectionId = String(m.connection_id ?? "");
         this.senderOnline = m.sender_online === true;
         this.senderInstance = typeof m.sender_instance === "string" ? m.sender_instance : null;
@@ -239,7 +244,6 @@ export class ViewerController {
         else if (hint?.kind === "passphrase") this.pinHint = { kind: "passphrase" };
         else if (hint?.kind === "digits" && typeof hint.length === "number") this.pinHint = { kind: "digits", length: hint.length };
         this.joinedLabel = this.join.label;
-        this.load();
         // Every signaling connection is a new relay peer: the sender knows
         // this viewer only after it (re-)admits on it (CONTRACT §8.3).
         this.channel?.dispose();

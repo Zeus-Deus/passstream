@@ -85,7 +85,7 @@ function Defaults({ owner }: { owner: string | null }) {
           </select>
         </label>
         <label className="flex min-h-10 items-center gap-3 self-end">
-          <input type="checkbox" className="size-5 accent-stamp" checked={d.knock} onChange={(e) => set({ knock: e.target.checked })} />
+          <input type="checkbox" className="size-5 shrink-0 accent-stamp" checked={d.knock} onChange={(e) => set({ knock: e.target.checked })} />
           <span>
             <span className="block font-medium">Knock to join</span>
             <span className="block text-[0.8rem] text-ink-mute">Viewers wait for approval on the host machine.</span>
@@ -95,7 +95,7 @@ function Defaults({ owner }: { owner: string | null }) {
       <fieldset className="border-t border-paper-edge pt-5">
         <legend className="label mb-2">Retention</legend>
         <label className="flex items-start gap-3">
-          <input type="checkbox" className="mt-0.5 size-5 accent-stamp" checked={s.retention.keep_ip} onChange={(e) => setS({ ...s, retention: { keep_ip: e.target.checked } })} data-testid="keep-ip" />
+          <input type="checkbox" className="mt-0.5 size-5 shrink-0 accent-stamp" checked={s.retention.keep_ip} onChange={(e) => setS({ ...s, retention: { keep_ip: e.target.checked } })} data-testid="keep-ip" />
           <span>
             <span className="block font-medium">Keep viewer IP addresses in history</span>
             <span className="block text-[0.8rem] text-ink-mute">Off by default: raw IPs last for the session only; history keeps country, city and device. Turning this on needs the owner key (unlock key management below).</span>

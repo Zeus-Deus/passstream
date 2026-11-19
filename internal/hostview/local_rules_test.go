@@ -102,3 +102,38 @@ func TestLocalJoinLeftRowsAndHistory(t *testing.T) {
 		t.Fatalf("history %+v", h)
 	}
 }
+
+// A connection first shows as "joining". Once the sender admits it (or it
+// starts knocking), that same connection belongs to the viewer's row; the
+// remembered joining row must not come back as a second viewer who "left".
+func TestJoiningRowIsNotResurrectedAfterAdmission(t *testing.T) {
+	at := int64(0)
+	conns := []Connection{lconn("c_1", 1, nil), lconn("c_2", 2, nil)}
+	l, mem, _ := Join(JoinInput{Now: 1000, State: &SenderState{}, StateAt: &at, PublisherOnline: true, Conns: conns}, JoinMemory{})
+	if lrow(l, "c:c_1") == nil || lrow(l, "c:c_2") == nil {
+		t.Fatalf("both connections start as joining: %+v", l.Viewers)
+	}
+	st := &SenderState{
+		Admissions: []Admission{ladm("a1", "v1", "c_1", true, 1500)},
+		Knocks:     []Knock{{KnockID: "k1", PeerID: "c_2", RowCode: "ACD"}},
+	}
+	l, mem, hist := Join(JoinInput{Now: 2000, State: st, StateAt: &at, PublisherOnline: true, Conns: conns}, mem)
+	if len(l.Viewers) != 2 || lrow(l, "v:v1") == nil || lrow(l, "k:k1") == nil {
+		t.Fatalf("want exactly the admitted and the knocking row, got %+v", l.Viewers)
+	}
+	if len(hist) != 0 {
+		t.Errorf("no history for a connection that is still watching: %+v", hist)
+	}
+	for _, m := range mem.Rows {
+		if m.RowID == "c:c_1" || m.RowID == "c:c_2" {
+			t.Errorf("stale joining row kept in memory: %s", m.RowID)
+		}
+	}
+	// A connection that closes without ever being admitted still shows as left.
+	gone := int64(2500)
+	_, mem3, _ := Join(JoinInput{Now: 1000, State: &SenderState{}, StateAt: &at, PublisherOnline: true, Conns: []Connection{lconn("c_3", 1, nil)}}, JoinMemory{})
+	l, _, _ = Join(JoinInput{Now: 3000, State: &SenderState{}, StateAt: &at, PublisherOnline: true, Conns: []Connection{lconn("c_3", 1, &gone)}}, mem3)
+	if r := lrow(l, "c:c_3"); r == nil || r.Status != "left" {
+		t.Errorf("an abandoned join still shows as left: %+v", l.Viewers)
+	}
+}

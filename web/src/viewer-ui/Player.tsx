@@ -36,6 +36,8 @@ export interface Quality {
   path: string | null;
   layer: string | null;
   freezes: number;
+  /** When these numbers were measured (epoch ms). Absent: taken as current. */
+  at?: number | null;
   /** Gaps over 500 ms between rendered frames, outside pauses (freezes are the ones with evidence of input). */
   render_gaps?: number;
   /** HUD details (FEATURES.md "Track D2" §1); optional so older callers still fit. */
@@ -53,18 +55,56 @@ export interface DrawControl {
   end(): void;
 }
 
-/** 0–4 bars from RTT, loss and frame rate; -1 without data. */
-export function qualityBars(q: Quality | null | undefined): number {
+/**
+ * 0–4 bars from RTT, loss and frame rate; -1 without data. A low frame rate
+ * only counts while the picture is expected to move (`moving`): a paused host
+ * sends a slow still picture, which says nothing about the connection.
+ */
+export function qualityBars(q: Quality | null | undefined, moving = true): number {
   if (!q || (q.rtt_ms === null && q.loss_pct === null)) return -1;
   const rtt = q.rtt_ms ?? 0,
     loss = q.loss_pct ?? 0;
   let bars = rtt <= 80 && loss <= 1 ? 4 : rtt <= 150 && loss <= 3 ? 3 : rtt <= 300 && loss <= 8 ? 2 : rtt <= 1000 && loss <= 25 ? 1 : 0;
-  if (q.fps !== null && q.fps < 4) bars = Math.min(bars, 2);
+  if (moving && q.fps !== null && q.fps < 4) bars = Math.min(bars, 2);
   return bars;
 }
-export function isDegraded(q: Quality | null | undefined) {
-  const b = qualityBars(q);
+export function isDegraded(q: Quality | null | undefined, moving = true) {
+  const b = qualityBars(q, moving);
   return b >= 0 && b < 3;
+}
+
+/**
+ * How long the connection must look weak before the viewer is told. One sample
+ * covers about a second, and the low-rate picture is a dozen packets in that
+ * time: a single late packet reads as 10% loss, and a picture that is starting
+ * or pausing reads as 1 fps. Neither lasts, on a perfect link included.
+ */
+export const WEAK_HOLD_MS = 3000;
+
+/**
+ * Stats arrive twice a second. A gap this long between measurements breaks a
+ * run of weak ones: sampling stalled, and what was seen before the gap is
+ * history, not evidence about now.
+ */
+export const STALE_SAMPLE_MS = 2000;
+
+/** A run of consecutive weak measurements, by their own timestamps. */
+export interface WeakRun {
+  since: number | null;
+  last: number | null;
+  held: boolean;
+}
+export const NO_WEAK_RUN: WeakRun = { since: null, last: null, held: false };
+
+/**
+ * Fold one new measurement into the run. The warning is earned only by weak
+ * measurements whose timestamps span WEAK_HOLD_MS with no gap of
+ * STALE_SAMPLE_MS between them; a good or unknown one ends the run.
+ */
+export function weakRun(run: WeakRun, at: number, weak: boolean): WeakRun {
+  if (!weak) return { ...NO_WEAK_RUN, last: at };
+  const since = run.since === null || run.last === null || at - run.last >= STALE_SAMPLE_MS ? at : run.since;
+  return { since, last: at, held: at - since >= WEAK_HOLD_MS };
 }
 
 export type PlayerState = "live" | "paused" | "reconnecting";
@@ -211,7 +251,40 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
   const [pip, setPip] = useState(false);
   const [fsSupported, setFsSupported] = useState(false);
   const wake = useWakeLock(state === "live");
-  const degraded = isDegraded(quality) || state === "reconnecting";
+  const moving = state === "live";
+  // Measurements with a timestamp earn the warning by their own clock (weakRun).
+  const sampledAt = quality?.at ?? null;
+  const weakNow = isDegraded(quality, moving);
+  const run = useRef<WeakRun>(NO_WEAK_RUN);
+  const [runHeld, setRunHeld] = useState(false);
+  useEffect(() => {
+    if (sampledAt === null) {
+      run.current = NO_WEAK_RUN;
+      return setRunHeld(false);
+    }
+    // A new timestamp advances the run. The same measurement can also stop
+    // counting as weak (the host paused, so its frame rate no longer matters):
+    // that ends the run at once, without waiting for the next sample.
+    if (sampledAt !== run.current.last) run.current = weakRun(run.current, sampledAt, weakNow);
+    else if (!weakNow) run.current = { ...NO_WEAK_RUN, last: sampledAt };
+    setRunHeld(run.current.held);
+    // No newer measurement by the time this one is stale: the run is over.
+    const t = setTimeout(() => {
+      run.current = NO_WEAK_RUN;
+      setRunHeld(false);
+    }, Math.max(0, sampledAt + STALE_SAMPLE_MS - Date.now()));
+    return () => clearTimeout(t);
+  }, [sampledAt, weakNow]);
+  // Callers without timestamps (the gallery, fixed fixtures) hold by arrival time instead.
+  const untimedWeak = sampledAt === null && weakNow;
+  const [untimedHeld, setUntimedHeld] = useState(false);
+  useEffect(() => {
+    if (!untimedWeak) return setUntimedHeld(false);
+    const t = setTimeout(() => setUntimedHeld(true), WEAK_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [untimedWeak]);
+  const weakHeld = runHeld || untimedHeld;
+  const degraded = weakHeld || state === "reconnecting";
 
   const setVideo = useCallback(
     (v: HTMLVideoElement | null) => {
@@ -486,7 +559,7 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
     left: "max(0.75rem, env(safe-area-inset-left))",
     right: "max(0.75rem, env(safe-area-inset-right))",
   };
-  const bars = qualityBars(quality);
+  const bars = qualityBars(quality, moving);
   const fade = `transition-opacity duration-200 ${chrome ? "opacity-100" : "pointer-events-none opacity-0"}`;
 
   return (
