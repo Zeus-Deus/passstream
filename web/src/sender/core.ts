@@ -615,6 +615,7 @@ export class SenderCore {
 
   /** Pause covers the screen and audio independently of encryption (HOST-CONTROL §5.6). */
   private applyLatches(l: Latches) {
+    if (this.phase === "ended") return;
     this.features?.sync();
     const track = this.capture?.getVideoTracks()[0] ?? null;
     // Pause mutes audio (HOST-CONTROL §5.6): a disabled track sends silence.
@@ -651,7 +652,7 @@ export class SenderCore {
       if (track) track.enabled = live === track;
       if (this.redactor) this.redactor.track.enabled = true;
       void this.session?.setOutgoing(live).then(async (ok) => {
-        if (ok || live === track) return;
+        if (ok || live === track || this.phase === "ended") return;
         this.safeError = "Couldn't switch the stream to safe mode, so the screen is hidden.";
         await this.session?.setOutgoing(null);
         this.changed();
@@ -760,6 +761,7 @@ export class SenderCore {
   }
 
   private async setSafe(on: boolean): Promise<Result> {
+    if (this.phase === "ended") return fail("conflict");
     if (!on && !this.safe) return { ok: true, data: {} };
     if (!on && this.safeOff) return fail("conflict");
     const prepare = !on && this.cfg.channel ? id22() : undefined;
@@ -785,20 +787,23 @@ export class SenderCore {
     }
 
     const disconnected = this.cfg.channel.disconnected;
+    // Keep the daemon preparation paired with its receipt for a successor.
+    // Ending this sender invalidates the attempt for all of its continuations.
+    const current = () => this.safeOff === prepare && this.phase !== "ended";
     let saved = await this.reportNow();
-    if (this.safeOff !== prepare) return fail("conflict");
+    if (!current()) return fail("conflict");
     if (saved) {
       const finalizing = new AbortController();
       try {
         await this.storage.update(key, () => prepare);
-        if (this.safeOff !== prepare) return fail("conflict");
+        if (!current()) return fail("conflict");
         this.finalizing = finalizing;
         // Strict commit completes the opt-out. A tightening can abort this
         // transaction even after its put is queued, until commit wins.
         const canceled = AbortSignal.any([disconnected, finalizing.signal]);
         await this.storage.update(key, () => `final:${prepare}`, canceled);
       } catch {
-        if (this.safeOff !== prepare) return fail("conflict");
+        if (!current()) return fail("conflict");
         saved = false;
       } finally {
         if (this.finalizing === finalizing) this.finalizing = undefined;
@@ -809,8 +814,8 @@ export class SenderCore {
       this.scheduleState();
       return storageError();
     }
-    // A tightening ordered after commit can precede delivery of oncomplete.
-    if (this.safeOff === prepare) {
+    // Commit wins even if tightening or teardown precedes delivery of oncomplete.
+    if (current()) {
       this.safe = false;
       this.redact();
     }
@@ -985,18 +990,23 @@ export class SenderCore {
     this.sendSecrets();
   }
 
+  private beginTeardown(reason: string) {
+    this.phase = "ended";
+    this.endedReason = reason;
+    this.finalizing?.abort();
+    this.capture?.getTracks().forEach((t) => { t.enabled = false; });
+    this.features?.stop();
+  }
+
   /** End the share: draw "Ended", report, leave, and remove the stream's stored state. */
   async end(reason: string, tellDaemon: boolean) {
     if (this.phase === "ended") return;
-    this.phase = "ended";
-    this.features?.stop();
-    this.endedReason = reason;
+    this.beginTeardown(reason);
     const ended = statusSource("ended", this.capture?.getVideoTracks()[0]?.getSettings());
-    await this.audioSender()?.replaceTrack(null).catch(() => undefined);
-    if (this.session?.mediaStarted) await this.session.setOutgoing(ended.getVideoTracks()[0]);
-    this.capture?.getTracks().forEach((t) => {
-      t.enabled = false;
-    });
+    await Promise.all([
+      this.audioSender()?.replaceTrack(null).catch(() => undefined),
+      this.session?.mediaStarted && this.session.setOutgoing(ended.getVideoTracks()[0]),
+    ]);
     await this.reportNow().catch(() => undefined);
     if (tellDaemon) this.cfg.channel?.sendEnded(reason === "expired" ? "expired" : reason);
     this.changed();
@@ -1021,9 +1031,8 @@ export class SenderCore {
 
   /** Superseded or closed: stop capture and drop the host without ending the stream. */
   async abandon() {
-    this.features?.stop();
-    this.phase = "ended";
-    this.endedReason = "superseded";
+    this.beginTeardown("superseded");
+    void this.session?.setOutgoing(null);
     this.session?.stop();
     this.capture?.getTracks().forEach((t) => t.stop());
     this.redactor?.stop();

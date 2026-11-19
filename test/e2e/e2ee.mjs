@@ -1861,6 +1861,126 @@ try {
     });
   }
 
+  for (const stop of ["end", "abandon"]) {
+    for (const committed of [false, true]) {
+      await test(`safe_mode_${stop}_${committed ? "after" : "before"}_opt_out_commit`, async () => {
+        const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+        await page.evaluate((committed) => {
+          const sender = window.passstreamSender;
+          const update = sender.storage.update.bind(sender.storage);
+          sender.storage.update = async (key, fn, signal) => {
+            if (!signal || key !== `ps:safe-off:${sender.streamId}`) return update(key, fn, signal);
+            const hold = () => new Promise((resolve) => { window.releaseFinalization = resolve; });
+            if (!committed) await hold();
+            const receipt = await update(key, fn, signal);
+            if (committed) await hold();
+            return receipt;
+          };
+          window.optOut = sender.command("window", "", "safe", { on: false });
+        }, committed);
+        await page.waitForFunction(() => !!window.releaseFinalization);
+        const result = await page.evaluate(async (stop) => {
+          const sender = window.passstreamSender, session = sender.session;
+          const raw = sender.capture.getVideoTracks()[0];
+          // Count even a transient exposure that teardown subsequently corrects.
+          let rawEnables = 0, rawSelections = 0;
+          const enabled = Object.getOwnPropertyDescriptor(MediaStreamTrack.prototype, "enabled");
+          Object.defineProperty(raw, "enabled", {
+            get: () => enabled.get.call(raw),
+            set(value) { if (value) rawEnables++; enabled.set.call(raw, value); },
+          });
+          const swap = session.setOutgoing.bind(session);
+          const installed = Promise.withResolvers();
+          session.setOutgoing = async (track) => {
+            if (track === raw) rawSelections++;
+            const ok = await swap(track);
+            installed.resolve(track);
+            return ok;
+          };
+          const stopping = stop === "end" ? sender.end("stopped", false) : sender.abandon();
+          const slate = stop === "end" ? await installed.promise : null;
+          const slateOnWire = () => !!slate && slate !== raw && session.outgoing === slate &&
+            session.videoSender.track === slate && session.thumbnailSender.track === slate;
+          const installedAtRelease = stop === "abandon" || slateOnWire();
+          window.releaseFinalization();
+          const reply = await window.optOut;
+          const protectedAtReply = !raw.enabled && session.outgoing !== raw &&
+            (stop === "abandon" || slateOnWire());
+          await stopping;
+          return { reply, installedAtRelease, protectedAtReply, rawEnables, rawSelections };
+        }, stop);
+        // A successor recovers the durable decision even when the abandoned
+        // sender never got to apply it to its own outgoing track.
+        let recovered = true;
+        if (stop === "abandon") {
+          await page.reload();
+          await page.getByTestId("test-source").click({ timeout: 15000 });
+          recovered = await page.evaluate((committed) => {
+            const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+            return sender.safe === !committed && raw.enabled === committed &&
+              (sender.session.outgoing === raw) === committed;
+          }, committed);
+        }
+        const expectedReply = committed ? result.reply.ok : result.reply.error?.code === "conflict";
+        return { pass: expectedReply && result.installedAtRelease && result.protectedAtReply &&
+          !result.rawEnables && !result.rawSelections && recovered, ...result, recovered };
+      });
+    }
+  }
+
+  for (const late of ["resume", "failed_swap"]) {
+    await test(`safe_mode_ended_slate_survives_late_${late}`, async () => {
+      const { page } = await share([], { source: "sensitive", tone: 0 });
+      await page.evaluate(async (late) => {
+        const sender = window.passstreamSender;
+        const hold = () => new Promise((resolve) => { window.finishMedia = resolve; });
+        if (late === "resume") {
+          await sender.command("window", "", "pause", {});
+          const update = sender.storage.update.bind(sender.storage);
+          sender.storage.update = async (...args) => {
+            const value = await update(...args);
+            if (args[0] === `ps:stream:${sender.streamId}`) {
+              sender.storage.update = update;
+              await hold();
+            }
+            return value;
+          };
+          window.mediaCommand = sender.command("window", "", "resume", {});
+        } else {
+          // One native sender reports a failed switch to redacted video after
+          // both senders have already accepted the ended slate.
+          const video = sender.session.videoSender, replace = video.replaceTrack.bind(video);
+          video.replaceTrack = async () => {
+            video.replaceTrack = replace;
+            await hold();
+            throw new DOMException("Switch refused", "InvalidStateError");
+          };
+          window.mediaCommand = sender.command("window", "", "safe", { on: true });
+        }
+      }, late);
+      await page.waitForFunction(() => !!window.finishMedia);
+      return page.evaluate(async () => {
+        const sender = window.passstreamSender, session = sender.session;
+        const raw = sender.capture.getVideoTracks()[0];
+        const installed = Promise.withResolvers();
+        const swap = session.setOutgoing.bind(session);
+        session.setOutgoing = async (track) => {
+          session.setOutgoing = swap;
+          const ok = await swap(track);
+          installed.resolve(track);
+          return ok;
+        };
+        const stopping = sender.end("stopped", false);
+        const slate = await installed.promise;
+        const onWire = session.videoSender.track === slate && session.thumbnailSender.track === slate;
+        window.finishMedia();
+        const reply = await window.mediaCommand;
+        await stopping;
+        return { pass: reply.ok && onWire && !!slate && slate !== raw && session.outgoing === slate && !raw.enabled };
+      });
+    });
+  }
+
   await test("safe_mode_hides_card_from_viewers", async () => {
     // web/src/source.ts sensitiveSource(): the card's digits and a plain line (1280×720 px).
     const CARD = { x: 360, y: 206, w: 330, h: 30 }, PLAIN = { x: 64, y: 306, w: 400, h: 30 };
