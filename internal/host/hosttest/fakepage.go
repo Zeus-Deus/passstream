@@ -431,7 +431,7 @@ func (p *Page) stateLocked() proto.SenderState {
 		fps := 30.0
 		h = &proto.Health{UplinkKbps: &k, FPS: &fps, QualityLimitation: "none"}
 	}
-	return proto.SenderState{V: 1, StreamID: p.streamID, Instance: p.instance, Seq: p.seq, Phase: phase, Mode: p.mode, Safe: p.safe,
+	return proto.SenderState{V: 1, StreamID: p.streamID, Instance: p.instance, Seq: p.seq, Phase: phase, Mode: p.mode, Safe: new(p.safe),
 		E2EE: proto.E2EE{Status: "beta", Epoch: 1},
 		Access: proto.Access{Pin: pin, PinVersion: p.pinVer, Latches: p.latches, Knock: p.knock,
 			Failures: proto.Failures{Stream: p.failures, Limit: 20}},

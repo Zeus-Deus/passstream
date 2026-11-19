@@ -94,6 +94,8 @@ export class SenderCore {
   mode: "text" | "motion";
   /** Safe mode (FEATURES.md "Safe mode"): redact sensitive data before encoding. On unless turned off locally. */
   safe: boolean;
+  /** A local request to reveal the capture once the daemon has saved that choice. */
+  private pendingSafeOff?: symbol;
   /** The redaction engine while safe mode is on and a capture exists. */
   redactor?: Redactor;
   /** Set when safe mode is on but can't run: nothing but the paused picture is sent. */
@@ -711,13 +713,7 @@ export class SenderCore {
         this.changed();
         return { ok: true, data: {} };
       case "safe":
-        // Turning safe mode off is permissive: checkRemote refuses it from the server.
-        if (this.safe !== (args.on === true)) {
-          this.safe = args.on === true;
-          this.redact();
-        }
-        this.changed();
-        return { ok: true, data: {} };
+        return this.setSafe(args.on === true);
       case "lock":
         await this.latch("locked", args.locked as boolean, pageOriginated);
         return { ok: true, data: {} };
@@ -754,6 +750,31 @@ export class SenderCore {
         return { ok: true, data: {} };
     }
     return fail("invalid_argument");
+  }
+
+  private async setSafe(on: boolean): Promise<Result> {
+    // Tighten immediately. A daemon-backed sender keeps redacting until an
+    // explicit local opt-out is durable. A later toggle supersedes that request.
+    const pending = !on && this.cfg.channel ? Symbol() : undefined;
+    this.pendingSafeOff = pending;
+    if (!pending && this.safe !== on) {
+      this.safe = on;
+      this.redact();
+    }
+    if (this.cfg.channel) {
+      const acked = await this.reportNow();
+      if (pending && this.pendingSafeOff === pending) {
+        this.pendingSafeOff = undefined;
+        if (acked && this.safe) {
+          this.safe = false;
+          this.redact();
+        } else if (!acked) {
+          this.scheduleState();
+        }
+      }
+      if (!acked) return fail("storage", "The daemon did not confirm that it saved the safe mode setting.", { applied: this.safe === on });
+    }
+    return { ok: true, data: {} };
   }
 
   private value(policy: PinPolicy, pin: unknown): { value?: string | null } {
@@ -832,7 +853,7 @@ export class SenderCore {
 
   // ---------------------------------------------------------------- reporting
 
-  state(): Record<string, unknown> {
+  state(): Record<string, unknown> & { seq: number } {
     const policy = this.policy;
     const viewers = this.phase === "ended" ? [] : this.viewers();
     const current = new Map(viewers.map((v) => [v.admissionId, v.viewerId]));
@@ -840,7 +861,7 @@ export class SenderCore {
       if (!current.has(a) && !this.kickedIds.has(a)) this.addEnd({ kind: "admission", admission_id: a, viewer_id: v, cause: this.phase === "ended" ? "stream_ended" : "revoked", at: Date.now() });
     this.lastAdmissions = current;
     const health = senderHealth(this.capture, this.session?.quality);
-    const s: Record<string, unknown> = {
+    const s: Record<string, unknown> & { seq: number } = {
       v: 1,
       stream_id: this.streamId,
       instance: this.instance,
@@ -886,12 +907,16 @@ export class SenderCore {
   }
 
   /** Send state to the server and the daemon; waits for the daemon's state_ack (≤ 1 s). */
-  async reportNow(): Promise<void> {
-    if (!this.recovery) return;
+  async reportNow(): Promise<boolean> {
+    if (!this.recovery) return false;
+    clearTimeout(this.stateTimer);
+    this.stateTimer = undefined;
     this.lastStateAt = Date.now();
     const s = this.state();
     this.session?.sendSignal({ type: "sender.state", state: s });
-    await this.cfg.channel?.sendState(s as { seq: number });
+    // Viewers see the effective mode. Only the daemon mirrors a pending opt-out.
+    const mirror = this.pendingSafeOff ? { ...s, safe: false } : s;
+    return this.cfg.channel?.sendState(mirror) ?? false;
   }
 
   sendSecrets() {

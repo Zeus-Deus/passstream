@@ -44,8 +44,9 @@ const SECRET_TOKENS = [
 ];
 // NAME=value in env/shell form: the rest of the line (OCR may split the value).
 const SECRET_ENV = /\b[A-Za-z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|PASS|PWD|AUTH|CREDENTIALS?)[A-Za-z0-9_]*=(\S.*)$/gi;
-// KEY=value / "password": value — the value only.
-const SECRET_ASSIGN = /\b[\w.-]*(?:secret|token|passw(?:or)?d|pwd|key|auth|credential)[\w.-]*["']?\s*[:=]\s*["']?([^\s"',;]{6,})/gi;
+// Match the value up to its unescaped closing quote or the end of the OCR line.
+// Leave the closing quote outside the match so the value is always its suffix.
+const SECRET_ASSIGN = /\b[\w.-]*(?:secret|token|passw(?:or)?d|pwd|key|auth|credential)[\w.-]*["']?\s*[:=]\s*(?:"((?:[^"\\]|\\.?)*)|'((?:[^'\\]|\\.?)*)|([^\s"',;]{6,}))/gi;
 
 const NOT_PHONE = [
   /^\d{4}[-./]\d{1,2}[-./]\d{1,2}/, // ISO-ish date
@@ -119,7 +120,7 @@ export function findSensitive(text: string): Span[] {
   for (const m of text.matchAll(EMAIL)) push(out, m.index, m.index + m[0].length, "email");
   for (const re of SECRET_TOKENS) for (const m of text.matchAll(re)) push(out, m.index, m.index + m[0].length, "secret");
   for (const m of text.matchAll(SECRET_ASSIGN)) {
-    const v = m[1];
+    const v = m[1] ?? m[2] ?? m[3];
     const at = m.index + m[0].length - v.length;
     push(out, at, at + v.length, "secret");
   }

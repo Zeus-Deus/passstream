@@ -56,6 +56,7 @@ export class FakeSender {
   seq = 0;
   phase = "live";
   mode = "text";
+  safe = true;
   latches = { locked: false, paused: false, frozen: false };
   failures = 0;
   pin: { kind: "digits" | "passphrase" | "none"; length: number | null } = { kind: "digits", length: 4 };
@@ -162,6 +163,11 @@ export class FakeSender {
         this.latches.locked = true;
         reply({});
         break;
+      case "safe":
+        if (m.args.on !== true) return fail("local_owner_required");
+        this.safe = true;
+        reply({});
+        break;
       case "mode":
         this.mode = String(m.args.mode);
         reply({});
@@ -199,6 +205,7 @@ export class FakeSender {
       seq: ++this.seq,
       phase: this.phase,
       mode: this.mode,
+      safe: this.safe,
       e2ee: { status: "beta", epoch: 1 + this.ends.filter((e) => e.kind === "admission").length, suspended: false, revocation_not_durable: false },
       access: {
         pin: { required: this.pin.kind !== "none", kind: this.pin.kind, length: this.pin.length },

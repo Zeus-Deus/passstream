@@ -11,7 +11,7 @@ import { artifactNeedles } from "./artifact-needles.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1523,6 +1523,47 @@ try {
     const recovered = Date.now() - t0;
     const ev = await v.evaluate(() => window.passstreamViewer.events.map((e) => e.kind + ":" + (e.detail ?? "")));
     return { pass: ev.filter((e) => e === "admitted:grant").length >= 1 && !ev.slice(2).some((e) => e === "hello:pin"), recovery_ms: recovered, events: ev };
+  });
+
+  await test("safe_mode_ack_survives_sender_reload", async () => {
+    const { page } = await share([], { source: "sensitive", tone: 0 });
+    const record = join(env.XDG_STATE_HOME, "passstream/host-state.json");
+    const savedSafe = () => JSON.parse(readFileSync(record, "utf8")).safe;
+    const before = savedSafe();
+
+    const protectedCapture = () => page.evaluate(() => {
+      const sender = window.passstreamSender;
+      return sender.safe && !sender.capture.getVideoTracks()[0].enabled;
+    });
+
+    // A nonempty directory blocks the daemon's atomic write while the old record stays readable.
+    const blocked = join(base, "blocked-state-write");
+    mkdirSync(join(blocked, "hold"), { recursive: true });
+    const withFailedWrite = async (mode) => {
+      renameSync(blocked, record + ".tmp");
+      try {
+        const result = cli(["safe", mode, "--json"]);
+        return {
+          failed: result.code !== 0 && JSON.parse(result.stderr || "{}").error?.code === "storage",
+          saved: savedSafe(),
+          protected: await protectedCapture(),
+        };
+      } finally {
+        renameSync(record + ".tmp", blocked);
+      }
+    };
+    const on = await withFailedWrite("on");
+    const retry = cli(["safe", "on", "--json"]);
+    const atReply = savedSafe();
+    await page.reload();
+    await page.getByTestId("test-source").click({ timeout: 15000 });
+    const protectedAfterReload = await protectedCapture();
+    const off = await withFailedWrite("off");
+    return {
+      pass: before === false && on.failed && on.saved === false && on.protected &&
+        retry.code === 0 && atReply === true && protectedAfterReload && off.failed && off.saved === true && off.protected,
+      before, on, atReply, protectedAfterReload, off,
+    };
   });
 
   await test("safe_mode_hides_card_from_viewers", async () => {

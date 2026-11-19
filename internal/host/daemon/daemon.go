@@ -337,7 +337,7 @@ func (d *Daemon) streamStatusLocked() *proto.StreamStatus {
 	if ss := st.state; ss != nil {
 		s.Phase = ss.Phase
 		s.Mode = ss.Mode
-		s.Safe = ss.Safe
+		s.Safe = ss.SafeEnabled()
 		acc := ss.Access
 		// The daemon's own latches only as they're on disk: a latch whose
 		// write failed was refused to its caller (HOST-CONTROL §5.6).

@@ -50,6 +50,15 @@ describe("safe mode classifier", () => {
     expect(hidden("load average: 0.42, 0.38, 0.31")).toEqual([]);
   });
 
+  it("covers the whole quoted credential and stops at its matching quote", () => {
+    expect(hidden(`"password": "my long passphrase", user: "Ada"`)).toEqual([["my long passphrase", "secret"]]);
+    expect(hidden(`password: 'correct horse', token: 'shh'`)).toEqual([["correct horse", "secret"], ["shh", "secret"]]);
+    const escaped = String.raw`a \"quoted\" phrase, ends in \\`;
+    expect(hidden(`password: "${escaped}" next`)).toEqual([[escaped, "secret"]]);
+    expect(hidden(String.raw`pwd: 'it\'s hidden' next`)).toEqual([[String.raw`it\'s hidden`, "secret"]]);
+    expect(hidden('password: "go to end, even here' + "\\")).toEqual([["go to end, even here" + "\\", "secret"]]);
+  });
+
   it("finds secrets and assigned credentials", () => {
     expect(hidden("STRIPE_KEY=sk_" + "live_51Hx9kQ2eZvKYlo2C8nT4rWm")).toEqual([["sk_" + "live_51Hx9kQ2eZvKYlo2C8nT4rWm", "secret"]]);
     expect(hidden("export GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123")).toEqual([["ghp_abcdefghijklmnopqrstuvwxyz0123", "secret"]]);

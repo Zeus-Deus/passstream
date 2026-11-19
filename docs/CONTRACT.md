@@ -202,7 +202,7 @@ SenderState {
   phase: "starting" | "picking" | "live" | "paused" | "ended"
   end_reason?: "stopped" | "window_closed" | "expired" | "deleted" | "state_lost" | "browser_failed" | "unknown"
   mode: "text" | "motion"
-  safe: bool                      // safe mode: sensitive data is redacted before encoding
+  safe?: bool                     // true when redacting before encoding; absent on older v1 senders (unprotected)
   e2ee: { status: "beta" | "on", epoch: uint, suspended: bool, revocation_not_durable: bool }
   access: Access
   admissions: Admission[]         // ≤ 500
@@ -784,7 +784,7 @@ Loosening commands (`resume`, unlock via `lock {locked:false}`, `unfreeze`, `pin
 | `start` | `{pin_policy?: PinPolicy, pin?: string, knock?: bool = false, label?: string \| null = null, mode?: "text" \| "motion" = "text", safe?: bool = true}` | `{stream_id}`. `pin_policy` present means an explicit choice. `pin` is allowed only with `pin_policy` (and required for `passphrase`). `safe: false` starts with safe mode off. |
 | `stop`, `pause`, `resume` | `{}` | `{}` |
 | `mode` | `{mode}` | `{}` |
-| `safe` | `{on: bool}` | `{}`. Safe mode on or off. Off is local only: the server can't send it (§8.5). Not a latch; the daemon mirrors it from `SenderState.safe`. |
+| `safe` | `{on: bool}` | `{}`. Safe mode on or off. Off is local only: the server can't send it (§8.5). The daemon mirrors explicit `SenderState.safe` values. The sender waits for the durable state acknowledgement before returning success. |
 | `lock` | `{locked: bool}` | `{}` |
 | `unfreeze` | `{keep_pin?: bool = false, pin?: string, action_id?: string}` | `{}`. Without `keep_pin` it rotates (sender-generated unless `pin`). |
 | `kick` | `{admission_id: Id22, lock?: bool = false, rotate_pin?: bool = false, pin?: string, action_id?: string}` | `{admission_ids, locked: bool}`. `pin` only with `rotate_pin`. |

@@ -612,8 +612,9 @@ func (d *Daemon) onState(st *stream, p *pageConn, raw any) {
 			dirty = true
 		}
 	}
-	if st.rec.Safe != s.Safe {
-		st.rec.Safe = s.Safe
+	// A legacy report cannot opt the next capture out of protection.
+	if s.Safe != nil && st.rec.Safe != *s.Safe {
+		st.rec.Safe = *s.Safe
 		dirty = true
 	}
 	// state_ack promises the mirror is durable: no ack while the record

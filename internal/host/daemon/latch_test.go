@@ -526,3 +526,23 @@ func TestStoppedDaemonLeavesTheStream(t *testing.T) {
 		t.Fatal("the stopped daemon ended the stream")
 	}
 }
+
+func TestLegacySenderStateKeepsSafePreference(t *testing.T) {
+	e, c, origin, lid, lkey := launched(t)
+	s, _, _ := attachedPage(t, c, origin, lid, lkey)
+	id, inst := e.record().StreamID, proto.NewId22()
+	for i, safe := range []*bool{new(true), nil, new(false)} {
+		msg := senderState(id, inst, i+1, proto.Latches{Locked: true}, func(st *proto.SenderState) { st.Safe = safe })
+		if err := hosttest.WriteMsg(ctx5(), s.WS, msg); err != nil {
+			t.Fatal(err)
+		}
+		readUntil(t, s.WS, "state_ack")
+		got := status(t, c).Stream
+		if !got.Access.Latches.Locked || got.Safe != (safe != nil && *safe) {
+			t.Fatalf("unexpected status after report %d: %+v", i+1, got)
+		}
+		if e.record().Safe != (safe == nil || *safe) {
+			t.Fatalf("unexpected saved safe mode after report %d", i+1)
+		}
+	}
+}
