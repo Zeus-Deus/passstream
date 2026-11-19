@@ -181,13 +181,15 @@ test("settings, key management and sign-out", async ({ page }, info) => {
   await expect(page.getByRole("heading", { name: "Sign in with a key." })).toBeVisible();
 });
 
-test("the phase-1 pages still render with their own styles", async ({ page }, info) => {
-  test.skip(info.project.name !== "desktop", "one run");
+test("first-time visitors can find viewer instructions and the owner dashboard", async ({ page }) => {
   await page.goto(`${env().base}/`);
-  await expect(page.getByRole("button", { name: "Create stream" })).toBeVisible();
-  // style.css is applied (its header rule), and the dashboard theme isn't loaded.
-  expect(await page.evaluate(() => getComputedStyle(document.querySelector("header")!).display)).toBe("flex");
-  expect(await page.evaluate(() => [...document.styleSheets].some((s) => s.href?.includes("theme")))).toBe(false);
+  await expect(page.getByRole("heading", { name: "Watch a stream" })).toBeVisible();
+  await expect(page.getByText(/private link from your host/)).toBeVisible();
+  await expect(page.getByRole("link", { name: "Set up your sender" })).toHaveAttribute("href", "https://github.com/Zeus-Deus/passstream#run-locally");
+  await expect(page.getByText("passstream share", { exact: true })).toBeVisible();
+  await noHorizontalOverflow(page);
+  await page.getByRole("link", { name: "Owner dashboard" }).click();
+  await expect(page.getByLabel("API key")).toBeVisible();
 });
 
 test("a disabled Sign in button looks the same under the pointer", async ({ page }) => {
