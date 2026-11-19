@@ -94,6 +94,7 @@ export function takeLaunchFragment() {
 
 export class LocalChannel {
   #ws?: WebSocket;
+  private connection = new AbortController();
   private authed = false;
   private done = false;
   private backoff = 100;
@@ -110,6 +111,11 @@ export class LocalChannel {
   constructor(private readonly h: ChannelHandlers) {
     registerPublishReceiver(this, () => this.prompt?.request_id, (id) =>
       this.#send({ type: "publish_decision", request_id: id, approved: true }));
+  }
+
+  /** Aborts when the socket that authorized an in-flight command closes. */
+  get disconnected(): AbortSignal {
+    return this.connection.signal;
   }
 
   get attached(): boolean {
@@ -222,11 +228,14 @@ export class LocalChannel {
     const np = crypto.getRandomValues(new Uint8Array(32));
     const ws = new WebSocket(`ws://${location.host}/local/v1/sender`);
     this.#ws = ws;
+    const connection = new AbortController();
+    this.connection = connection;
     this.authed = false;
     let verified = false;
     let initDone = false;
     ws.onopen = () => ws.send(JSON.stringify({ type: "hello", protocol: 1, key_id: k.key_id, nonce: b64e(np) }));
     ws.onclose = () => {
+      connection.abort();
       this.prompt=null;this.promptListeners.forEach((f)=>f());
       if (this.#ws === ws) this.authed = false;
       if (!this.done && this.#ws === ws) this.retry(verified ? "reconnecting" : "waiting for the daemon");

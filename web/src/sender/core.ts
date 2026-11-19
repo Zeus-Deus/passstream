@@ -97,6 +97,7 @@ export class SenderCore {
   safe: boolean;
   /** Identifies this opt-out in both the daemon record and the page receipt. */
   private safeOff?: string;
+  private finalizing?: AbortController;
   /** The redaction engine while safe mode is on and a capture exists. */
   redactor?: Redactor;
   /** Set when safe mode is on but can't run: nothing but the paused picture is sent. */
@@ -216,7 +217,7 @@ export class SenderCore {
     // Abandoned records (a tab closed without ending its stream) go after a week unseen.
     await this.storage.pruneIdle(this.streamId, ABANDONED_MS).catch(() => undefined);
     const prepared = this.cfg.preparedSafeOff;
-    if (prepared && prepared === (await this.storage.get(`ps:safe-off:${id}`))) {
+    if (prepared && `final:${prepared}` === (await this.storage.get(`ps:safe-off:${id}`))) {
       this.safeOff = prepared;
       this.safe = false;
     }
@@ -767,36 +768,51 @@ export class SenderCore {
       this.safe = on;
       this.redact();
     }
-    if (this.cfg.channel) {
-      const key = `ps:safe-off:${this.streamId}`;
-      // Queue revocation before yielding. IndexedDB runs it after any pending
-      // receipt write and before a later opt-out can write its own receipt.
-      // A daemon ack independently confirms tightening if IndexedDB fails.
-      const revoke = on ? this.storage.update(key, () => null).catch(() => null) : undefined;
-      let [saved] = await Promise.all([this.reportNow(), revoke]);
+    if (!this.cfg.channel) return { ok: true, data: {} };
+    const key = `ps:safe-off:${this.streamId}`;
+    const storageError = () => fail("storage", "The safe mode setting could not be confirmed for reload.", { applied: this.safe === on });
+    if (!prepare) {
+      this.finalizing?.abort();
+      // Queue revocation before yielding, ahead of any subsequent opt-out.
+      const revoke = this.storage.update(key, () => null).catch(() => null);
+      const [saved] = await Promise.all([this.reportNow(), revoke]);
       if (this.safeOff !== prepare) return fail("conflict");
-      if (prepare && saved) {
-        // Both stores must agree before a reload may reveal the capture. A
-        // lost or late daemon ack leaves no matching receipt in IndexedDB.
-        try {
-          const receipt = await this.storage.update(key, (prev) =>
-            this.safeOff === prepare ? prepare : prev ?? null,
-          );
-          if (receipt !== prepare) return fail("conflict");
-        } catch {
-          saved = false;
-        }
-        if (this.safeOff !== prepare) return fail("conflict");
-      }
       if (!saved) {
-        this.safeOff = undefined;
         this.scheduleState();
-        return fail("storage", "The safe mode setting could not be confirmed for reload.", { applied: this.safe === on });
+        return storageError();
       }
-      if (prepare) {
-        this.safe = false;
-        this.redact();
+      return { ok: true, data: {} };
+    }
+
+    const disconnected = this.cfg.channel.disconnected;
+    let saved = await this.reportNow();
+    if (this.safeOff !== prepare) return fail("conflict");
+    if (saved) {
+      const finalizing = new AbortController();
+      try {
+        await this.storage.update(key, () => prepare);
+        if (this.safeOff !== prepare) return fail("conflict");
+        this.finalizing = finalizing;
+        // Strict commit completes the opt-out. A tightening can abort this
+        // transaction even after its put is queued, until commit wins.
+        const canceled = AbortSignal.any([disconnected, finalizing.signal]);
+        await this.storage.update(key, () => `final:${prepare}`, canceled);
+      } catch {
+        if (this.safeOff !== prepare) return fail("conflict");
+        saved = false;
+      } finally {
+        if (this.finalizing === finalizing) this.finalizing = undefined;
       }
+    }
+    if (!saved) {
+      this.safeOff = undefined;
+      this.scheduleState();
+      return storageError();
+    }
+    // A tightening ordered after commit can precede delivery of oncomplete.
+    if (this.safeOff === prepare) {
+      this.safe = false;
+      this.redact();
     }
     return { ok: true, data: {} };
   }

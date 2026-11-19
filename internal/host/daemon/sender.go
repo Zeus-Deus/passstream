@@ -619,7 +619,7 @@ func (d *Daemon) onState(st *stream, p *pageConn, raw any, safeOff string) {
 		}
 	}
 	// A pending opt-out is still a protected capture. Only a page that
-	// received our ack and committed its matching receipt can confirm it.
+	// received our ack and finalized its matching receipt can confirm it.
 	previousPreparation := st.rec.SafeOff
 	if s.Safe != nil {
 		switch {

@@ -784,7 +784,7 @@ Loosening commands (`resume`, unlock via `lock {locked:false}`, `unfreeze`, `pin
 | `start` | `{pin_policy?: PinPolicy, pin?: string, knock?: bool = false, label?: string \| null = null, mode?: "text" \| "motion" = "text", safe?: bool = true}` | `{stream_id}`. `pin_policy` present means an explicit choice. `pin` is allowed only with `pin_policy` (and required for `passphrase`). `safe: false` starts with safe mode off. |
 | `stop`, `pause`, `resume` | `{}` | `{}` |
 | `mode` | `{mode}` | `{}` |
-| `safe` | `{on: bool}` | `{}`. Safe mode on or off. Off is local only: the server can't send it (§8.5). Protection applies immediately and the daemon retries failed writes. A local opt-out needs both a durable daemon preparation and a matching page receipt (§11). |
+| `safe` | `{on: bool}` | `{}`. Safe mode on or off. Off is local only: the server can't send it (§8.5). Protection applies immediately and the daemon retries failed writes. A local opt-out completes when the page durably finalizes its receipt for the acknowledged daemon preparation (§11). |
 | `lock` | `{locked: bool}` | `{}` |
 | `unfreeze` | `{keep_pin?: bool = false, pin?: string, action_id?: string}` | `{}`. Without `keep_pin` it rotates (sender-generated unless `pin`). |
 | `kick` | `{admission_id: Id22, lock?: bool = false, rotate_pin?: bool = false, pin?: string, action_id?: string}` | `{admission_ids, locked: bool}`. `pin` only with `rotate_pin`. |
@@ -1023,7 +1023,7 @@ A message out of order (anything but `hello` first, anything but `auth` after `c
 Init {
   type: "init"
   attachment?: { key_id: Id22, key: Token43 }   // only after a launch-key exchange; the same value every time
-  safe_off?: Id22                       // prepared opt-out, requires matching IndexedDB receipt
+  safe_off?: Id22                       // prepared opt-out, requires matching finalized IndexedDB receipt
   server_url: string
   signal_url: string                    // wss://…/signal, derived from server_url
   stream: { id: StreamId, publish_token: Token43, view_link_base: string }
@@ -1033,7 +1033,11 @@ Init {
 }
 ```
 
-A local opt-out sends a fresh `safe_off` ID with the still-protected state. The daemon fsyncs the ID with `policy.safe` true and echoes it with the corresponding sequence. Only after receiving that ack does the page commit the ID in IndexedDB for this stream and turn protection off. On reload a prepared ID only takes effect with a matching page receipt. A subsequent effective `safe:false` report with the same ID lets the daemon finish the transition to `policy.safe:false`. Tightening revokes the page receipt even if the daemon cannot save its report. An opt-out overtaken before it applies returns `conflict`. The daemon clears its preparation when it saves the tightening report. Missing `SenderState.safe` preserves recovery policy.
+A local opt-out sends a fresh `safe_off` ID with the still-protected state. The daemon fsyncs the ID with `policy.safe` true and echoes it with the corresponding sequence. After receiving that ack, the page commits a provisional receipt in IndexedDB. If the attempt is still current, a separate strict transaction finalizes the receipt. Its durable commit completes the opt-out. Only then may the page select raw capture and report `safe:false` with the matching ID. The daemon can persist that effective report as `policy.safe:false`.
+
+When `policy.safe` is true, restoring raw capture requires the prepared ID and its matching finalized receipt. A bare receipt from an earlier sender version is provisional. Losing the daemon connection cancels pending finalization, including across reattachment. A missing preparation ack, interrupted receipt write, or failed finalization leaves capture protected. If the page disappears after finalization commits, reload honors the completed opt-out even if the caller lost its reply.
+
+Tightening protects capture immediately, cancels pending finalization, queues receipt revocation, and reports protected state to clear the daemon preparation. An opt-out canceled before commit returns `conflict`. If commit wins, the opt-out succeeds and a later tightening takes precedence even if the completion notification arrives late. Missing `SenderState.safe` preserves recovery policy.
 
 ### 11.2 Rules
 

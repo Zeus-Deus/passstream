@@ -46,7 +46,7 @@ type Record struct {
 	Label        *string         `json:"label"`
 	Mode         string          `json:"mode"`
 	Safe         bool            `json:"safe"`
-	SafeOff      string          `json:"safe_off,omitempty"` // Prepared opt-out, effective only with the page's matching receipt.
+	SafeOff      string          `json:"safe_off,omitempty"` // Prepared opt-out, effective only with the page's matching finalized receipt.
 	Policy       proto.PinPolicy `json:"pin_policy"`
 	Knock        bool            `json:"knock"`
 	Latches      proto.Latches   `json:"latches"`

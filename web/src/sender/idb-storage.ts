@@ -33,10 +33,20 @@ export class IndexedDBStorage implements AtomicStorage {
     return v === undefined ? undefined : (JSON.parse(v as string) as Json);
   }
 
-  update(key: string, fn: (current: Json | undefined) => Json): Promise<Json> {
+  update(key: string, fn: (current: Json | undefined) => Json, signal?: AbortSignal): Promise<Json> {
     return new Promise((resolve, reject) => {
+      signal?.throwIfAborted();
       const tx = this.db.transaction(STORE, "readwrite", { durability: "strict" });
       const store = tx.objectStore(STORE);
+      const abort = () => {
+        try {
+          tx.abort();
+        } catch (e) {
+          // Already finishing. Its completion or abort event decides the result.
+          if (!(e instanceof DOMException && e.name === "InvalidStateError")) throw e;
+        }
+      };
+      signal?.addEventListener("abort", abort, { once: true });
       let next: Json = null;
       let failure: unknown = null;
       const get = store.get(key);
@@ -50,8 +60,14 @@ export class IndexedDBStorage implements AtomicStorage {
           tx.abort();
         }
       };
-      tx.oncomplete = () => resolve(JSON.parse(JSON.stringify(next)) as Json);
-      tx.onabort = () => reject(failure ?? tx.error ?? new Error("storage transaction aborted"));
+      tx.oncomplete = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve(JSON.parse(JSON.stringify(next)) as Json);
+      };
+      tx.onabort = () => {
+        signal?.removeEventListener("abort", abort);
+        reject(failure ?? tx.error ?? new Error("storage transaction aborted"));
+      };
       tx.onerror = () => {
         /* onabort follows */
       };

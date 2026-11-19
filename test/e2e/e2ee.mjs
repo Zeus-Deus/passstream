@@ -1644,32 +1644,50 @@ try {
     });
     const refused = await cliAsync(["safe", "off", "--json"]);
     const afterReceiptFailure = await reopen();
+    await page.evaluate(() => {
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        if (String(key).startsWith("ps:safe-off:") && JSON.parse(value)?.startsWith("final:"))
+          throw new DOMException("Finalization failed", "QuotaExceededError");
+        return put.apply(this, arguments);
+      };
+    });
+    const finalFailure = await cliAsync(["safe", "off", "--json"]);
+    const finalError = JSON.parse(finalFailure.stderr).error;
+    const protectedAtReply = await page.evaluate(() => {
+      const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+      return sender.safe && !raw.enabled && sender.session.outgoing !== raw;
+    });
+    const afterFinalFailure = await reopen();
     return {
       pass: failed.code !== 0 && JSON.parse(failed.stderr).error?.code === "storage" &&
         unconfirmed.safe && !!unconfirmed.safe_off && afterTimeout.safe && !afterTimeout.rawEnabled &&
         success.code === 0 && confirmed.safe && !!confirmed.safe_off && confirmed.safe_off !== unconfirmed.safe_off &&
         !afterSuccess.safe && afterSuccess.rawEnabled && on.code === 0 &&
         refused.code !== 0 && JSON.parse(refused.stderr).error?.code === "storage" &&
-        afterReceiptFailure.safe && !afterReceiptFailure.rawEnabled,
-      afterTimeout, afterSuccess, afterReceiptFailure, rejected: failed.code, accepted: success.code,
+        afterReceiptFailure.safe && !afterReceiptFailure.rawEnabled && finalFailure.code !== 0 &&
+        finalError.code === "storage" && finalError.details?.applied === false && protectedAtReply &&
+        afterFinalFailure.safe && !afterFinalFailure.rawEnabled,
+      afterTimeout, afterSuccess, afterReceiptFailure, afterFinalFailure, protectedAtReply, rejected: failed.code, accepted: success.code,
     };
   });
 
-  for (const scenario of ["tighten", "failed_daemon_save", "new_opt_out"]) {
+  for (const scenario of ["tighten", "failed_daemon_save", "failed_both_saves", "finalizing_failed_both_saves", "new_opt_out"]) {
     await test(`safe_mode_pending_receipt_${scenario}`, async () => {
       const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
       const record = join(env.XDG_STATE_HOME, "passstream/host-state.json");
       const saved = () => JSON.parse(readFileSync(record, "utf8"));
-      const failedSave = scenario === "failed_daemon_save";
+      const failRevoke = scenario.endsWith("failed_both_saves");
+      const failedSave = scenario === "failed_daemon_save" || failRevoke;
       const replace = scenario === "new_opt_out";
 
-      const first = page.evaluate(() => {
+      const first = page.evaluate((holdFinal) => {
         const sender = window.passstreamSender;
         const key = `ps:safe-off:${sender.streamId}`;
         const put = IDBObjectStore.prototype.put;
         IDBObjectStore.prototype.put = function (value, target) {
           const request = put.apply(this, arguments);
-          if (target === key) {
+          if (target === key && (!holdFinal || JSON.parse(value).startsWith("final:"))) {
             IDBObjectStore.prototype.put = put;
             // Keep the actual transaction alive after the receipt put is queued.
             let held = true;
@@ -1691,7 +1709,7 @@ try {
           return request;
         };
         return sender.command("window", "", "safe", { on: false });
-      });
+      }, scenario === "finalizing_failed_both_saves");
       await page.waitForFunction(() => !!window.releaseReceipt);
       const prepared = saved();
       // Preserve the prepared record across a real daemon write failure and restart.
@@ -1699,8 +1717,16 @@ try {
       const senderURL = page.url();
       let race, disk;
       try {
-        race = await page.evaluate(async (replace) => {
+        race = await page.evaluate(async ({ replace, failRevoke }) => {
           const sender = window.passstreamSender;
+          if (failRevoke) {
+            const put = IDBObjectStore.prototype.put;
+            IDBObjectStore.prototype.put = function (value, target) {
+              if (target === `ps:safe-off:${sender.streamId}` && value === "null")
+                throw new DOMException("Revocation failed", "QuotaExceededError");
+              return put.apply(this, arguments);
+            };
+          }
           let releaseAck;
           if (replace) {
             // Deliver the tightening ack only after the next opt-out commits.
@@ -1720,14 +1746,14 @@ try {
           const next = await pending;
           releaseAck?.();
           return { protectedNow, on: await on, next, receipt: await window.readReceipt() };
-        }, replace);
+        }, { replace, failRevoke });
         disk = saved();
         if (failedSave) {
           await killDaemon();
           await page.goto("about:blank");
         }
       } finally {
-        if (failedSave) renameSync(record + ".tmp", join(base, "blocked-receipt-race-write"));
+        if (failedSave) renameSync(record + ".tmp", join(base, `blocked-receipt-race-${scenario}`));
       }
       const off = await first;
       if (failedSave) {
@@ -1740,17 +1766,98 @@ try {
       const reload = await page.evaluate(() => ({
         safe: window.passstreamSender.safe,
         rawEnabled: window.passstreamSender.capture.getVideoTracks()[0].enabled,
+        rawOutgoing: window.passstreamSender.session.outgoing === window.passstreamSender.capture.getVideoTracks()[0],
       }));
       const onResult = failedSave ? race.on.error?.code === "storage" && race.on.error.details?.applied === true
         : replace ? race.on.error?.code === "conflict" : race.on.ok;
-      const stored = replace ? race.next.ok && !!race.receipt && race.receipt !== prepared.safe_off &&
-        (disk.safe ? disk.safe_off === race.receipt : !disk.safe_off)
-        : !race.receipt && disk.safe && (failedSave ? disk.safe_off === prepared.safe_off : !disk.safe_off);
+      const stored = replace ? race.next.ok && race.receipt?.startsWith("final:") && race.receipt !== `final:${prepared.safe_off}` &&
+        (disk.safe ? race.receipt === `final:${disk.safe_off}` : !disk.safe_off)
+        : race.receipt === (failRevoke ? prepared.safe_off : null) && disk.safe &&
+          (failedSave ? disk.safe_off === prepared.safe_off : !disk.safe_off);
       return {
         pass: prepared.safe && !!prepared.safe_off && off.error?.code === "conflict" && race.protectedNow &&
-          onResult && stored && reload.safe === !replace && reload.rawEnabled === replace,
+          onResult && stored && reload.safe === !replace && reload.rawEnabled === replace && reload.rawOutgoing === replace,
         off, on: race.on, next: race.next, protectedNow: race.protectedNow, stored, reload,
       };
+    });
+  }
+
+  for (const stage of ["provisional", "provisional_then_reattached", "finalized", "finalized_then_tightened"]) {
+    await test(`safe_mode_interrupted_after_${stage}_commit`, async () => {
+      const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+      const url = page.url();
+      const record = join(env.XDG_STATE_HOME, "passstream/host-state.json");
+      await page.evaluate((stage) => {
+        const sender = window.passstreamSender, store = sender.storage;
+        const update = store.update.bind(store);
+        store.update = async (...args) => {
+          const value = await update(...args);
+          if (args[0] === `ps:safe-off:${sender.streamId}` &&
+              typeof value === "string" && value.startsWith("final:") === stage.startsWith("finalized")) {
+            // The real strict commit finished. Withhold its completion from the command.
+            store.update = update;
+            await new Promise((resolve) => { window.deliverCommit = resolve; });
+          }
+          return value;
+        };
+      }, stage);
+      const reattach = stage === "provisional_then_reattached";
+      const command = reattach
+        ? page.evaluate(() => window.passstreamSender.command("window", "", "safe", { on: false }))
+        : cliAsync(["safe", "off", "--json"]);
+      await page.waitForFunction(() => !!window.deliverCommit);
+      const disk = JSON.parse(readFileSync(record, "utf8"));
+      const before = await page.evaluate(async () => {
+        const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+        return { protected: sender.safe && !raw.enabled && sender.session.outgoing !== raw,
+          receipt: await sender.storage.get(`ps:safe-off:${sender.streamId}`) };
+      });
+      let on, protectedAfterRetry, protectedAtReply;
+      if (reattach) {
+        await killDaemon();
+        await page.waitForFunction(() => !window.passstreamSender.cfg.channel.attached);
+        await startDaemon();
+        await page.waitForFunction(() => window.passstreamSender.cfg.channel.attached);
+        await page.evaluate(() => window.deliverCommit());
+        await command;
+        protectedAfterRetry = await page.evaluate(async () => {
+          const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+          return await sender.reportNow() && sender.safe && !raw.enabled && sender.session.outgoing !== raw;
+        });
+        const retried = JSON.parse(readFileSync(record, "utf8"));
+        protectedAfterRetry &&= retried.safe && !retried.safe_off;
+        await page.reload();
+      } else if (stage === "finalized_then_tightened") {
+        on = await page.evaluate(async () => {
+          const result = await window.passstreamSender.command("window", "", "safe", { on: true });
+          window.deliverCommit();
+          return result;
+        });
+        await command;
+        protectedAtReply = await page.evaluate(() => {
+          const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+          return sender.safe && !raw.enabled && sender.session.outgoing !== raw;
+        });
+        await page.reload();
+      } else {
+        await killDaemon();
+        await page.goto("about:blank");
+        await startDaemon();
+        await page.goto(url);
+      }
+      const reply = await command;
+      await page.getByTestId("test-source").click({ timeout: 15000 });
+      const after = await page.evaluate(() => {
+        const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+        return { safe: sender.safe, enabled: raw.enabled, outgoing: sender.session.outgoing === raw };
+      });
+      const raw = stage === "finalized";
+      const completed = reattach ? protectedAfterRetry && reply.error?.code === "storage" && reply.error.details?.applied === false
+        : stage === "finalized_then_tightened" ? on.ok && protectedAtReply && reply.code === 0 : reply.code !== 0;
+      const expectedReceipt = stage.startsWith("provisional") ? disk.safe_off : `final:${disk.safe_off}`;
+      return { pass: completed && disk.safe && !!disk.safe_off && before.receipt === expectedReceipt &&
+        before.protected && after.safe === !raw && after.enabled === raw && after.outgoing === raw,
+        protectedBefore: before.protected, protectedAfterRetry, reply: reply.code ?? reply.error?.code, after };
     });
   }
 
