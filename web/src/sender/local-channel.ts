@@ -15,10 +15,11 @@ export type LatchesWire = { locked: boolean; paused: boolean; frozen: boolean };
 export interface Init {
   type: "init";
   attachment?: Key;
+  safe_off?: string;
   server_url: string;
   signal_url: string;
   stream: { id: string; publish_token: string; view_link_base: string };
-  policy: { pin_policy: PinPolicyWire; pin: string | null; knock: boolean; mode: "text" | "motion" };
+  policy: { pin_policy: PinPolicyWire; pin: string | null; knock: boolean; mode: "text" | "motion"; safe: boolean };
   latches: LatchesWire;
   active_stream_ids: string[];
 }
@@ -93,11 +94,12 @@ export function takeLaunchFragment() {
 
 export class LocalChannel {
   #ws?: WebSocket;
+  private connection = new AbortController();
   private authed = false;
   private done = false;
   private backoff = 100;
   private readonly started = Date.now();
-  private acks = new Map<number, () => void>();
+  private acks = new Map<number, (safeOff?: string) => void>();
   private ownerReplies = new Map<string, (r: { ok: boolean; data?: Record<string, unknown>; error?: { code: string } }) => void>();
   private prompt: PublishPrompt|null = null;
   private promptListeners = new Set<() => void>();
@@ -109,6 +111,11 @@ export class LocalChannel {
   constructor(private readonly h: ChannelHandlers) {
     registerPublishReceiver(this, () => this.prompt?.request_id, (id) =>
       this.#send({ type: "publish_decision", request_id: id, approved: true }));
+  }
+
+  /** Aborts when the socket that authorized an in-flight command closes. */
+  get disconnected(): AbortSignal {
+    return this.connection.signal;
   }
 
   get attached(): boolean {
@@ -162,16 +169,16 @@ export class LocalChannel {
   }
 
   /** Report state; resolves when the daemon acked that seq (fsynced its latch mirror), or after 1 s. */
-  sendState(state: { seq: number }): Promise<boolean> {
-    if (!this.#send({ type: "state", state })) return Promise.resolve(false);
+  sendState(state: { seq: number }, safeOff?: string): Promise<boolean> {
+    if (!this.#send({ type: "state", state, safe_off: safeOff })) return Promise.resolve(false);
     return new Promise((resolve) => {
       const t = setTimeout(() => {
         this.acks.delete(state.seq);
         resolve(false);
       }, 1000);
-      this.acks.set(state.seq, () => {
+      this.acks.set(state.seq, (prepared) => {
         clearTimeout(t);
-        resolve(true);
+        resolve(!safeOff || prepared === safeOff);
       });
     });
   }
@@ -221,11 +228,14 @@ export class LocalChannel {
     const np = crypto.getRandomValues(new Uint8Array(32));
     const ws = new WebSocket(`ws://${location.host}/local/v1/sender`);
     this.#ws = ws;
+    const connection = new AbortController();
+    this.connection = connection;
     this.authed = false;
     let verified = false;
     let initDone = false;
     ws.onopen = () => ws.send(JSON.stringify({ type: "hello", protocol: 1, key_id: k.key_id, nonce: b64e(np) }));
     ws.onclose = () => {
+      connection.abort();
       this.prompt=null;this.promptListeners.forEach((f)=>f());
       if (this.#ws === ws) this.authed = false;
       if (!this.done && this.#ws === ws) this.retry(verified ? "reconnecting" : "waiting for the daemon");
@@ -308,7 +318,7 @@ export class LocalChannel {
         this.h.command({ id: String(m.id), op: String(m.op), args: m.args && typeof m.args === "object" ? m.args : {} });
         break;
       case "state_ack":
-        this.acks.get(Number(m.seq))?.();
+        this.acks.get(Number(m.seq))?.(m.safe_off);
         this.acks.delete(Number(m.seq));
         break;
       case "view":

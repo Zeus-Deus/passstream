@@ -67,7 +67,9 @@ const SHELL_COPY: Record<string, string> = {
 };
 
 /** Plain words for a refused command. Unknown codes fall back to the code itself. */
-export function commandError(op: string, code: string): string {
+export function commandError(op: string, code: string, details?: Record<string, unknown>): string {
+  if (op === "safe" && code === "storage" && details?.applied === true)
+    return "Safe mode is on for this capture. PassStream couldn't confirm it will stay on after reload.";
   const what: Record<string, string> = {
     paused: "Start sharing first: there's no picture to use yet.",
     not_live: "This stream isn't live on this machine any more.",
@@ -305,7 +307,7 @@ function SenderWindow({ store, trustedServer }: { store: ShellStore; trustedServ
   const [message, setMessage] = useState("");
   const [picker, setPicker] = useState<{ text: string; error: boolean } | null>(null);
   const act = (op: string, args: Record<string, unknown>) => {
-    void core?.command("window", "", op, args).then((r: Result) => setMessage(r.ok ? "" : commandError(op, r.error.code)));
+    void core?.command("window", "", op, args).then((r: Result) => setMessage(r.ok ? "" : commandError(op, r.error.code, r.error.details)));
   };
   const share = async (test: boolean) => {
     if (!core) return;
@@ -431,8 +433,12 @@ function SenderWindow({ store, trustedServer }: { store: ShellStore; trustedServ
                     ))}
                   </span>
                 </span>
+                <button type="button" className="btn" data-testid="safe" aria-pressed={core.safe} onClick={() => act("safe", { on: !core.safe })}>
+                  {core.safe ? "Safe mode: on" : "Safe mode: off"}
+                </button>
                 <StopButton onStop={() => act("stop", {})} />
               </div>
+              <SafeStatus core={core} />
               {l?.locked && <p className="text-[0.82rem] text-warn">Locked: nobody new can join until you unlock.</p>}
             </section>
             {message && (
@@ -488,6 +494,7 @@ export function mountLocalSender(el: HTMLElement) {
             signalUrl: init.signal_url,
             serverUrl: init.server_url,
             policy: init.policy,
+            preparedSafeOff: init.safe_off,
             latches: init.latches,
             mayCreate: viaLaunch,
             activeStreamIds: init.active_stream_ids,
@@ -546,7 +553,7 @@ export function mountBrowserSender(el: HTMLElement) {
     stream: { id, publish_token: token, view_link_base: `${location.origin}/v#c=${cap}` },
     signalUrl: `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/signal`,
     serverUrl: location.origin,
-    policy: { pin_policy: policy, pin: null, knock: f.get("knock") === "1", mode: "text" },
+    policy: { pin_policy: policy, pin: null, knock: f.get("knock") === "1", mode: "text", safe: true },
     latches: { locked: false, paused: false, frozen: false },
     mayCreate: true,
   })
@@ -557,4 +564,23 @@ export function mountBrowserSender(el: HTMLElement) {
       core.sendSecrets();
     })
     .catch((e) => store.set({ state: "error", detail: String(e) }));
+}
+
+/** Safe mode's state, as the host sees it (viewers just see covers). */
+function SafeStatus({ core }: { core: SenderCore }) {
+  if (!core.safe || !core.capture) return null;
+  if (core.safeError) return <p className="text-stamp" data-testid="safe-status">{core.safeError}</p>;
+  const s = core.redactor?.stats;
+  const text = !s || s.status === "starting"
+    ? "Safe mode is starting: all text is hidden until it has been checked."
+    : s.status === "unavailable"
+      ? "Safe mode can't read the screen right now, so viewers see only hidden text. Turn it off to share normally."
+      : s.status === "catching_up"
+        ? `Safe mode: checking ${s.pending} new ${s.pending === 1 ? "line" : "lines"}; hidden until checked.`
+        : `Safe mode: ${s.covers} ${s.covers === 1 ? "item" : "items"} hidden from viewers.`;
+  return (
+    <p className={`text-[0.82rem] ${s?.status === "unavailable" ? "text-stamp" : "text-ink-mute"}`} data-testid="safe-status">
+      {text}
+    </p>
+  );
 }

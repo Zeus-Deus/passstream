@@ -42,6 +42,7 @@ import { senderHealth } from "./health";
 import { HostAnnotations } from "../annotations/host";
 import type { LocalChannel } from "./local-channel";
 import { OwnerCapture } from "./owner-capture";
+import { Redactor, safeModeSupported } from "../redact/redactor";
 
 export type Phase = "starting" | "picking" | "live" | "paused" | "ended";
 export type Channel = "local" | "remote" | "window";
@@ -53,11 +54,12 @@ export interface SenderConfig {
   signalUrl: string;
   serverUrl: string;
   /** Used only to create the recovery record on a first launch. */
-  policy: { pin_policy: PinPolicy; pin: string | null; knock: boolean; mode: "text" | "motion" };
+  policy: { pin_policy: PinPolicy; pin: string | null; knock: boolean; mode: "text" | "motion"; safe?: boolean };
   latches: Latches;
   /** False when the record must already exist (an attachment-key init). */
   mayCreate: boolean;
   activeStreamIds?: string[];
+  preparedSafeOff?: string;
   channel?: LocalChannel;
 }
 
@@ -91,6 +93,15 @@ export class SenderCore {
   readonly instance = id22();
   phase: Phase = "starting";
   mode: "text" | "motion";
+  /** Safe mode (FEATURES.md "Safe mode"): redact sensitive data before encoding. On unless turned off locally. */
+  safe: boolean;
+  /** Identifies this opt-out in both the daemon record and the page receipt. */
+  private safeOff?: string;
+  private finalizing?: AbortController;
+  /** The redaction engine while safe mode is on and a capture exists. */
+  redactor?: Redactor;
+  /** Set when safe mode is on but can't run: nothing but the paused picture is sent. */
+  safeError = "";
   recovery!: HostRecovery;
   session?: Session;
   capture: MediaStream | null = null;
@@ -141,6 +152,9 @@ export class SenderCore {
 
   private constructor(readonly cfg: SenderConfig) {
     this.mode = cfg.policy.mode;
+    // Test-only (`?test&safe=0` in an e2e build): synthetic timing sources change
+    // every frame and would stay covered (fail-closed), breaking frame decoding.
+    this.safe = (cfg.policy.safe ?? true) && !(SENDER_TEST_HOOKS && new URLSearchParams(location.search).get("safe") === "0");
     this.alerts = new AlertBatcher({
       onFlush: (b) => {
         if (b.failures > 0) this.alert({ kind: "failed_pin", count: b.failures, sources: b.sources, from_at: b.firstAt, to_at: b.lastAt });
@@ -202,6 +216,11 @@ export class SenderCore {
     if (this.cfg.activeStreamIds) await this.cleanup(this.cfg.activeStreamIds);
     // Abandoned records (a tab closed without ending its stream) go after a week unseen.
     await this.storage.pruneIdle(this.streamId, ABANDONED_MS).catch(() => undefined);
+    const prepared = this.cfg.preparedSafeOff;
+    if (prepared && `final:${prepared}` === (await this.storage.get(`ps:safe-off:${id}`))) {
+      this.safeOff = prepared;
+      this.safe = false;
+    }
     // A first launch writes the whole record at once: secrets, PIN state, policy.
     const key = `ps:stream:${id}`;
     const existing = await this.storage.get(key);
@@ -522,7 +541,7 @@ export class SenderCore {
     }
     this.capture?.getTracks().forEach((t) => t.stop());
     this.capture = stream;
-    this.features?.source(stream);
+    this.redact(false);
     this.audio = stream.getAudioTracks()[0] ?? null;
     // Muted before it is attached: a paused stream never sends a frame of it.
     if (this.audio) this.audio.enabled = !this.latches.paused;
@@ -531,6 +550,7 @@ export class SenderCore {
     else if (this.liveAudio()) void this.session?.extendCurrent((pc) => this.addAudio(pc));
     const track = stream.getVideoTracks()[0];
     track.contentHint = this.mode === "motion" ? "motion" : "text";
+    if (this.redactor) this.redactor.track.contentHint = track.contentHint;
     track.addEventListener("ended", () => {
       if (this.capture === stream) void this.end("stopped", true);
     });
@@ -542,14 +562,67 @@ export class SenderCore {
     this.changed();
   }
 
+  /**
+   * The video that leaves this page: the redacted track while safe mode is
+   * on (FEATURES.md "Safe mode"), else the capture. Safe mode on but unable
+   * to run sends the paused picture: never the unredacted screen.
+   */
+  private live(): MediaStreamTrack | null {
+    const raw = this.capture?.getVideoTracks()[0] ?? null;
+    if (!raw || !this.safe) return raw;
+    if (this.redactor) return this.redactor.track;
+    this.blocked ??= statusSource("paused", raw.getSettings());
+    return this.blocked.getVideoTracks()[0];
+  }
+  /** The picture sent while safe mode is on but can't run. */
+  private blocked?: MediaStream;
+
+  /** (Re)build redaction for the current capture and policy, and switch every consumer to `live()`. */
+  private redact(apply = true) {
+    const raw = this.capture?.getVideoTracks()[0];
+    const want = this.safe && !!raw && raw.readyState === "live";
+    if (this.redactor && (!want || this.redactor.source !== raw)) {
+      this.redactor.stop();
+      this.redactor = undefined;
+    }
+    this.safeError = "";
+    if (this.blocked) {
+      stopTestSource(this.blocked);
+      this.blocked.getTracks().forEach((t) => t.stop());
+      this.blocked = undefined;
+    }
+    if (want && !this.redactor) {
+      try {
+        if (!safeModeSupported()) throw new Error("unsupported");
+        this.redactor = new Redactor(raw!);
+        this.redactor.track.contentHint = raw!.contentHint;
+        this.redactor.track.enabled = !this.latches.paused;
+        this.redactor.on((m) => m.type === "stats" && this.changed());
+      } catch {
+        this.safeError = "Safe mode can't run in this browser. Turn it off to share.";
+      }
+    }
+    // The host's preview, local snapshots and recordings see what viewers see.
+    const live = this.live();
+    this.preview = this.capture && live ? (live === raw ? this.capture : new MediaStream([live, ...this.capture.getAudioTracks()])) : null;
+    if (this.preview) this.features?.source(this.preview);
+    if (apply) this.applyLatches(this.latches);
+    this.changed();
+  }
+
+  /** What the host's own preview shows: what viewers get. */
+  preview: MediaStream | null = null;
+
   /** Pause covers the screen and audio independently of encryption (HOST-CONTROL §5.6). */
   private applyLatches(l: Latches) {
+    if (this.phase === "ended") return;
     this.features?.sync();
     const track = this.capture?.getVideoTracks()[0] ?? null;
     // Pause mutes audio (HOST-CONTROL §5.6): a disabled track sends silence.
     if (this.audio) this.audio.enabled = !l.paused;
     if (l.paused) {
       if (track) track.enabled = false;
+      if (this.redactor) this.redactor.track.enabled = false;
       let fencing = false;
       if (track && !this.curtain.appliedAt) {
         this.curtain.appliedAt = Date.now();
@@ -572,8 +645,18 @@ export class SenderCore {
       if (this.phase === "live" || this.phase === "picking") this.phase = "paused";
     } else {
       this.curtain.appliedAt = 0;
-      if (track) track.enabled = true;
-      void this.session?.setOutgoing(track);
+      const live = this.live();
+      // The capture is enabled only while it is what gets sent. In safe mode it
+      // is disabled before the swap: a sender not yet switched (or refusing the
+      // switch) sends black, never the screen. The redactor reads its own copy.
+      if (track) track.enabled = live === track;
+      if (this.redactor) this.redactor.track.enabled = true;
+      void this.session?.setOutgoing(live).then(async (ok) => {
+        if (ok || live === track || this.phase === "ended") return;
+        this.safeError = "Couldn't switch the stream to safe mode, so the screen is hidden.";
+        await this.session?.setOutgoing(null);
+        this.changed();
+      });
       if (this.paused) {
         stopTestSource(this.paused);
         this.paused.getTracks().forEach((t) => t.stop());
@@ -637,6 +720,8 @@ export class SenderCore {
         await this.session?.mode(this.mode === "motion");
         this.changed();
         return { ok: true, data: {} };
+      case "safe":
+        return this.setSafe(args.on === true);
       case "lock":
         await this.latch("locked", args.locked as boolean, pageOriginated);
         return { ok: true, data: {} };
@@ -673,6 +758,68 @@ export class SenderCore {
         return { ok: true, data: {} };
     }
     return fail("invalid_argument");
+  }
+
+  private async setSafe(on: boolean): Promise<Result> {
+    if (this.phase === "ended") return fail("conflict");
+    if (!on && !this.safe) return { ok: true, data: {} };
+    if (!on && this.safeOff) return fail("conflict");
+    const prepare = !on && this.cfg.channel ? id22() : undefined;
+    this.safeOff = prepare;
+    if (!prepare && this.safe !== on) {
+      this.safe = on;
+      this.redact();
+    }
+    if (!this.cfg.channel) return { ok: true, data: {} };
+    const key = `ps:safe-off:${this.streamId}`;
+    const storageError = () => fail("storage", "The safe mode setting could not be confirmed for reload.", { applied: this.safe === on });
+    if (!prepare) {
+      this.finalizing?.abort();
+      // Queue revocation before yielding, ahead of any subsequent opt-out.
+      const revoke = this.storage.update(key, () => null).catch(() => null);
+      const [saved] = await Promise.all([this.reportNow(), revoke]);
+      if (this.safeOff !== prepare) return fail("conflict");
+      if (!saved) {
+        this.scheduleState();
+        return storageError();
+      }
+      return { ok: true, data: {} };
+    }
+
+    const disconnected = this.cfg.channel.disconnected;
+    // Keep the daemon preparation paired with its receipt for a successor.
+    // Ending this sender invalidates the attempt for all of its continuations.
+    const current = () => this.safeOff === prepare && this.phase !== "ended";
+    let saved = await this.reportNow();
+    if (!current()) return fail("conflict");
+    if (saved) {
+      const finalizing = new AbortController();
+      try {
+        await this.storage.update(key, () => prepare);
+        if (!current()) return fail("conflict");
+        this.finalizing = finalizing;
+        // Strict commit completes the opt-out. A tightening can abort this
+        // transaction even after its put is queued, until commit wins.
+        const canceled = AbortSignal.any([disconnected, finalizing.signal]);
+        await this.storage.update(key, () => `final:${prepare}`, canceled);
+      } catch {
+        if (!current()) return fail("conflict");
+        saved = false;
+      } finally {
+        if (this.finalizing === finalizing) this.finalizing = undefined;
+      }
+    }
+    if (!saved) {
+      this.safeOff = undefined;
+      this.scheduleState();
+      return storageError();
+    }
+    // Commit wins even if tightening or teardown precedes delivery of oncomplete.
+    if (current()) {
+      this.safe = false;
+      this.redact();
+    }
+    return { ok: true, data: {} };
   }
 
   private value(policy: PinPolicy, pin: unknown): { value?: string | null } {
@@ -751,7 +898,7 @@ export class SenderCore {
 
   // ---------------------------------------------------------------- reporting
 
-  state(): Record<string, unknown> {
+  state(): Record<string, unknown> & { seq: number } {
     const policy = this.policy;
     const viewers = this.phase === "ended" ? [] : this.viewers();
     const current = new Map(viewers.map((v) => [v.admissionId, v.viewerId]));
@@ -759,13 +906,14 @@ export class SenderCore {
       if (!current.has(a) && !this.kickedIds.has(a)) this.addEnd({ kind: "admission", admission_id: a, viewer_id: v, cause: this.phase === "ended" ? "stream_ended" : "revoked", at: Date.now() });
     this.lastAdmissions = current;
     const health = senderHealth(this.capture, this.session?.quality);
-    const s: Record<string, unknown> = {
+    const s: Record<string, unknown> & { seq: number } = {
       v: 1,
       stream_id: this.streamId,
       instance: this.instance,
       seq: ++this.seq,
       phase: this.phase,
       mode: this.mode,
+      safe: this.safe,
       e2ee: { status: "beta", epoch: this.host.keys.activeEpoch, suspended: this.host.keys.suspended, revocation_not_durable: this.host.revocationNotDurable },
       access: {
         pin: { required: policy.kind !== "none", kind: policy.kind, length: policy.kind === "digits" ? policy.length : null },
@@ -804,12 +952,14 @@ export class SenderCore {
   }
 
   /** Send state to the server and the daemon; waits for the daemon's state_ack (≤ 1 s). */
-  async reportNow(): Promise<void> {
-    if (!this.recovery) return;
+  async reportNow(): Promise<boolean> {
+    if (!this.recovery) return false;
+    clearTimeout(this.stateTimer);
+    this.stateTimer = undefined;
     this.lastStateAt = Date.now();
     const s = this.state();
     this.session?.sendSignal({ type: "sender.state", state: s });
-    await this.cfg.channel?.sendState(s as { seq: number });
+    return this.cfg.channel?.sendState(s, this.safeOff) ?? false;
   }
 
   sendSecrets() {
@@ -840,18 +990,25 @@ export class SenderCore {
     this.sendSecrets();
   }
 
+  private beginTeardown(reason: string) {
+    this.phase = "ended";
+    this.endedReason = reason;
+    this.capture?.getTracks().forEach((t) => { t.enabled = false; });
+    this.redactor?.stop();
+    this.redactor = undefined;
+    this.finalizing?.abort();
+    this.features?.stop();
+  }
+
   /** End the share: draw "Ended", report, leave, and remove the stream's stored state. */
   async end(reason: string, tellDaemon: boolean) {
     if (this.phase === "ended") return;
-    this.phase = "ended";
-    this.features?.stop();
-    this.endedReason = reason;
+    this.beginTeardown(reason);
     const ended = statusSource("ended", this.capture?.getVideoTracks()[0]?.getSettings());
-    await this.audioSender()?.replaceTrack(null).catch(() => undefined);
-    if (this.session?.mediaStarted) await this.session.setOutgoing(ended.getVideoTracks()[0]);
-    this.capture?.getTracks().forEach((t) => {
-      t.enabled = false;
-    });
+    await Promise.all([
+      this.audioSender()?.replaceTrack(null).catch(() => undefined),
+      this.session?.mediaStarted && this.session.setOutgoing(ended.getVideoTracks()[0]),
+    ]);
     await this.reportNow().catch(() => undefined);
     if (tellDaemon) this.cfg.channel?.sendEnded(reason === "expired" ? "expired" : reason);
     this.changed();
@@ -863,6 +1020,7 @@ export class SenderCore {
     this.capture?.getTracks().forEach((t) => t.stop());
     if (this.capture) stopTestSource(this.capture);
     if (this.paused) stopTestSource(this.paused);
+    if (this.blocked) stopTestSource(this.blocked);
     this.timers.forEach(clearInterval);
     this.annotations?.stop();
     await this.host.close().catch(() => undefined);
@@ -874,9 +1032,8 @@ export class SenderCore {
 
   /** Superseded or closed: stop capture and drop the host without ending the stream. */
   async abandon() {
-    this.features?.stop();
-    this.phase = "ended";
-    this.endedReason = "superseded";
+    this.beginTeardown("superseded");
+    void this.session?.setOutgoing(null);
     this.session?.stop();
     this.capture?.getTracks().forEach((t) => t.stop());
     this.timers.forEach(clearInterval);

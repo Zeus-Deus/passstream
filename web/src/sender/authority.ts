@@ -37,6 +37,10 @@ export function checkRemote(op: string, args: Record<string, unknown>): Result |
       return closedArgs(args, []) ? null : fail("invalid_argument");
     case "mode":
       return closedArgs(args, ["mode"]) && (args.mode === "text" || args.mode === "motion") ? null : fail("invalid_argument");
+    case "safe":
+      // Safe mode off sends sensitive data unredacted (local only); on is restrictive.
+      if (args.on === false) return fail("local_owner_required");
+      return closedArgs(args, ["on"]) && args.on === true ? null : fail("invalid_argument");
     case "lock":
       if (args.locked === false) return fail("local_owner_required");
       return closedArgs(args, ["locked"]) && args.locked === true ? null : fail("invalid_argument");
@@ -51,7 +55,7 @@ export function checkRemote(op: string, args: Record<string, unknown>): Result |
     case "annotations.clear":
       return closedArgs(args, []) ? null : fail("invalid_argument");
   }
-  // resume, unfreeze, pin.*, knock.approve, annotations {viewers: true} and anything unknown.
+  // resume, unfreeze, pin.*, knock.approve, annotations {viewers: true}, safe {on: false} and anything unknown.
   return fail("local_owner_required");
 }
 
@@ -67,6 +71,8 @@ export function checkLocal(op: string, args: Record<string, unknown>): boolean {
       return ok([]);
     case "mode":
       return ok(["mode"]) && (args.mode === "text" || args.mode === "motion");
+    case "safe":
+      return ok(["on"]) && typeof args.on === "boolean";
     case "lock":
       return ok(["locked"]) && typeof args.locked === "boolean";
     case "unfreeze":

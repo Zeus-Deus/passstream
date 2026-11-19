@@ -174,15 +174,17 @@ type startArgs struct {
 	knock    bool
 	label    *string
 	mode     string
+	safe     bool
 	byClient string
 }
 
 func parseStart(args map[string]any) (startArgs, error) {
 	var a startArgs
-	if err := closed(args, "pin_policy", "pin", "knock", "label", "mode"); err != nil {
+	if err := closed(args, "pin_policy", "pin", "knock", "label", "mode", "safe"); err != nil {
 		return a, err
 	}
 	a.mode = "text"
+	a.safe = true // safe mode is on unless the caller turns it off
 	if v, ok := args["pin_policy"]; ok {
 		p, err := proto.ParsePinPolicy(v)
 		if err != nil {
@@ -217,6 +219,13 @@ func parseStart(args map[string]any) (startArgs, error) {
 			return a, proto.E("invalid_argument", "mode must be text or motion")
 		}
 		a.mode = v.(string)
+	}
+	if v, ok := args["safe"]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return a, proto.E("invalid_argument", "safe must be a boolean")
+		}
+		a.safe = b
 	}
 	if a.pin != nil && a.policy == nil {
 		return a, proto.E("invalid_argument", "pin is allowed only with pin_policy")
@@ -320,7 +329,7 @@ func (d *Daemon) start(c *client, args map[string]any) (any, error) {
 		return nil, err
 	}
 	rec := &state.Record{V: state.Version, StreamID: created.ID, ServerURL: d.cfg.ServerURL, PublishToken: created.PublishToken,
-		ViewLinkBase: created.ViewLinkBase, Label: a.label, Mode: a.mode, Policy: policy, Knock: knock, StartedAt: nowMs()}
+		ViewLinkBase: created.ViewLinkBase, Label: a.label, Mode: a.mode, Safe: a.safe, Policy: policy, Knock: knock, StartedAt: nowMs()}
 	st := newStream(rec)
 	st.att = attLaunching
 	st.explicitPin = a.pin

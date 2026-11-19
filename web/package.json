@@ -10,6 +10,7 @@
     "e2e": "npm run build && playwright test"
   },
   "dependencies": {
+    "onnxruntime-web": "1.31.1",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

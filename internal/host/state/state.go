@@ -45,6 +45,8 @@ type Record struct {
 	ViewLinkBase string          `json:"view_link_base"`
 	Label        *string         `json:"label"`
 	Mode         string          `json:"mode"`
+	Safe         bool            `json:"safe"`
+	SafeOff      string          `json:"safe_off,omitempty"` // Prepared opt-out, effective only with the page's matching finalized receipt.
 	Policy       proto.PinPolicy `json:"pin_policy"`
 	Knock        bool            `json:"knock"`
 	Latches      proto.Latches   `json:"latches"`
@@ -120,7 +122,8 @@ func Load(path string) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	var r Record
+	// A record written before safe mode existed keeps it on.
+	r := Record{Safe: true}
 	if err := json.Unmarshal(b, &r); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

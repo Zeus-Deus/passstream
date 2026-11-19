@@ -118,7 +118,7 @@ func (d *Daemon) dispatch(c *client, op string, args map[string]any) (any, error
 			}
 		}
 		return map[string]any{}, nil
-	case "pause", "resume", "mode", "lock", "unfreeze", "kick", "pin.rotate", "pin.set", "knock.approve", "knock.deny", "annotations", "annotations.clear":
+	case "pause", "resume", "mode", "safe", "lock", "unfreeze", "kick", "pin.rotate", "pin.set", "knock.approve", "knock.deny", "annotations", "annotations.clear":
 	default:
 		return nil, proto.E("invalid_argument", "unknown op")
 	}
@@ -179,6 +179,11 @@ func validateCommand(op string, args map[string]any) error {
 		if m := args["mode"]; m != "text" && m != "motion" {
 			return proto.E("invalid_argument", "mode must be text or motion")
 		}
+	case "safe":
+		if err := closed(args, "on"); err != nil {
+			return err
+		}
+		return reqBool(args, "on", true)
 	case "lock":
 		if err := closed(args, "locked"); err != nil {
 			return err

@@ -21,8 +21,8 @@ export async function addPublisherThumbnail(pc: RTCPeerConnection, stream: Media
 }
 
 // Keep the publisher's HUD/source measurements on its full-resolution encoding.
-export function publisherStats(pc: RTCPeerConnection, stream?: MediaStream) {
-  return pc.getSenders().find(s => s.track === stream?.getVideoTracks()[0])?.getStats() ?? pc.getStats();
+export function publisherStats(pc: RTCPeerConnection, sender?: RTCRtpSender) {
+  return sender?.getStats() ?? pc.getStats();
 }
 
 // Chromium's VP9 loss controller otherwise falls to 30 kbit/s even when NACK

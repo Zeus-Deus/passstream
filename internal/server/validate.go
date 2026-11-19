@@ -76,6 +76,10 @@ func parseState(b []byte) (hostview.SenderState, error) {
 	if err := json.Unmarshal(b, &wire); err != nil {
 		return v, err
 	}
+	// safe is optional in v1, but an explicit value must be a boolean.
+	if bytes.Equal(wire["safe"], []byte("null")) {
+		return v, errors.New("null safe mode")
+	}
 	health, hasHealth := wire["health"]
 	if hasHealth {
 		wire["health"] = json.RawMessage("null")

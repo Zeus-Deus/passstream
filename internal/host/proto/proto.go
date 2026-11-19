@@ -212,6 +212,7 @@ type StreamStatus struct {
 	Phase      string   `json:"phase"`
 	Attachment string   `json:"attachment"`
 	Mode       string   `json:"mode"`
+	Safe       bool     `json:"safe"`
 	StartedAt  int64    `json:"started_at"`
 	LiveAt     *int64   `json:"live_at"`
 	Access     *Access  `json:"access"`

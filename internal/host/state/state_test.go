@@ -35,3 +35,20 @@ func TestSaveLoad(t *testing.T) {
 		t.Fatal("no record is (nil, nil)")
 	}
 }
+
+// A record saved before safe mode existed restores it on; a saved off stays off.
+func TestLoadDefaultsSafeModeOn(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "host-state.json")
+	if err := os.WriteFile(p, []byte(`{"v":1,"stream_id":"AAAAAAAAAAAAAAAAAAAAAA"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := Load(p); err != nil || !r.Safe {
+		t.Fatalf("legacy record: %+v %v", r, err)
+	}
+	if err := Save(p, &Record{V: Version, StreamID: "AAAAAAAAAAAAAAAAAAAAAA", Safe: false}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := Load(p); err != nil || r.Safe {
+		t.Fatalf("saved off: %+v %v", r, err)
+	}
+}

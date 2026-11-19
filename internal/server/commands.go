@@ -107,6 +107,16 @@ func validateCommand(v commandRequest) string {
 	case "stop", "pause":
 	case "mode":
 		allowed["mode"] = true
+	case "safe":
+		// Safe mode on is restrictive; off loosens privacy and is local only.
+		allowed["on"] = true
+		var b bool
+		if json.Unmarshal(v.Args["on"], &b) != nil || string(v.Args["on"]) == "null" {
+			return "invalid_argument"
+		}
+		if !b {
+			return "local_owner_required"
+		}
 	case "lock":
 		allowed["locked"] = true
 		var b bool

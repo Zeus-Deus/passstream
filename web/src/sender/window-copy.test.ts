@@ -22,6 +22,11 @@ describe("sender window copy", () => {
     expect(commandError("pin.rotate", "brand_new_code")).toBe("Couldn't pin rotate (brand_new_code).");
   });
 
+  it("distinguishes current capture protection from saving it for reload", () => {
+    expect(commandError("safe", "storage", { applied: true })).toMatch(/on for this capture.*after reload/i);
+    expect(commandError("safe", "storage", { applied: false })).toMatch(/wasn't applied/);
+  });
+
   it("labels every sender phase", () => {
     for (const phase of ["starting", "picking", "live", "paused", "ended"]) expect(PHASE_COPY[phase]?.label).toBeTruthy();
     expect(PHASE_COPY.picking.label).toBe("Not sharing yet");

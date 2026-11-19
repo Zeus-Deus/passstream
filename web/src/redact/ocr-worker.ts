@@ -1,0 +1,156 @@
+/**
+ * Safe mode's recognition worker: line crops in, covers out. Runs PP-OCRv5
+ * recognition through ONNX Runtime Web, on WebGPU when the browser exposes a
+ * GPU adapter and on threaded WASM otherwise. Segments are batched by width
+ * bucket, so one GPU dispatch serves many lines.
+ */
+import * as ort from "onnxruntime-web/webgpu";
+import { BUCKETS, INPUT_H, classifyLine, decode, fill, segments, type Glyph, type LineResult, type Segment } from "./ocr";
+
+export interface OcrJob {
+  key: string;
+  w: number;
+  h: number;
+  data: Uint8Array;
+}
+export type OcrIn =
+  | { type: "init"; model: ArrayBuffer; dict: string; wasmBinary: ArrayBuffer; wasm: string; gpu: boolean; threads: number; keepText: boolean }
+  | { type: "fail"; message: string }
+  | { type: "jobs"; jobs: OcrJob[] };
+export type OcrOut =
+  | { type: "ready"; backend: "webgpu" | "wasm"; threads: number; loadMs: number }
+  | { type: "results"; items: { key: string; result: LineResult }[]; ms: number; segments: number }
+  | { type: "dropped"; keys: string[] }
+  | { type: "error"; message: string };
+
+/** GPU: one dispatch serves many lines. CPU: padding to a shared width only wastes work. */
+let maxBatch = 32;
+const MAX_QUEUE = 400;
+const MAX_QUEUE_BYTES = 32 << 20;
+let exact = false;
+/** Lines per pass (results are posted after each): GPU batches many; CPU posts often so text clears progressively. */
+let maxLines = 48;
+
+let session: ort.InferenceSession | null = null;
+let chars: string[] = [];
+let keepText = false;
+const queue: OcrJob[] = [];
+let busy = false;
+/** The last ready or fatal status, repeated to each new frame worker. */
+let ready: OcrOut | null = null;
+let port: { postMessage(m: OcrOut): void } = { postMessage: () => undefined };
+
+async function init(m: Extract<OcrIn, { type: "init" }>) {
+  const t0 = performance.now();
+  keepText = m.keepText;
+  ort.env.wasm.wasmPaths = m.wasm;
+  ort.env.wasm.numThreads = crossOriginIsolated ? m.threads : 1;
+  ort.env.logLevel = "error";
+  // The runtime and model arrive with the message (fetched by the page).
+  ort.env.wasm.wasmBinary = m.wasmBinary;
+  const dict = m.dict.split("\n");
+  if (dict[dict.length - 1] === "") dict.pop();
+  chars = ["", ...dict, " "];
+  let backend: "webgpu" | "wasm" = "wasm";
+  const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
+  if (m.gpu && gpu && (await gpu.requestAdapter().catch(() => null))) backend = "webgpu";
+  const model = new Uint8Array(m.model);
+  try {
+    session = await ort.InferenceSession.create(model, { executionProviders: [backend], graphOptimizationLevel: "all" });
+  } catch (e) {
+    if (backend !== "webgpu") throw e;
+    backend = "wasm";
+    session = await ort.InferenceSession.create(model, { executionProviders: ["wasm"], graphOptimizationLevel: "all" });
+  }
+  if (backend === "wasm") (maxBatch = 1), (exact = true), (maxLines = 8);
+  // Warm the common shapes so the first real change isn't paying for shader/kernel setup.
+  for (const b of [BUCKETS[2], BUCKETS[4]]) await run(new Float32Array(3 * INPUT_H * b), 1, b);
+  ready = { type: "ready", backend, threads: ort.env.wasm.numThreads ?? 1, loadMs: Math.round(performance.now() - t0) };
+  port.postMessage(ready);
+}
+
+async function run(input: Float32Array, n: number, bucket: number) {
+  const s = session!;
+  const out = await s.run({ [s.inputNames[0]]: new ort.Tensor("float32", input, [n, 3, INPUT_H, bucket]) });
+  const t = out[s.outputNames[0]];
+  const data = (await t.getData()) as Float32Array;
+  return { data, T: t.dims[1], C: t.dims[2] };
+}
+
+async function recognise(jobs: OcrJob[]) {
+  const segs: { job: number; k: number; seg: Segment }[] = [];
+  jobs.forEach((j, i) => segments(j.data, j.w, j.h, exact).forEach((seg, k) => segs.push({ job: i, k, seg })));
+  const glyphs: Glyph[][][] = jobs.map(() => []);
+  const byBucket = new Map<number, number[]>();
+  segs.forEach((s, i) => byBucket.set(s.seg.bucket, [...(byBucket.get(s.seg.bucket) ?? []), i]));
+  for (const [bucket, idx] of byBucket) {
+    for (let k = 0; k < idx.length; k += maxBatch) {
+      const part = idx.slice(k, k + maxBatch);
+      const plane = 3 * INPUT_H * bucket;
+      const input = new Float32Array(part.length * plane);
+      part.forEach((si, n) => {
+        const { job, seg } = segs[si];
+        fill(input, n * plane, jobs[job].data, jobs[job].w, jobs[job].h, seg);
+      });
+      const { data, T, C } = await run(input, part.length, bucket);
+      part.forEach((si, n) => {
+        const { job, k: at, seg } = segs[si];
+        glyphs[job][at] = decode(data.subarray(n * T * C, (n + 1) * T * C), T, C, chars, seg);
+      });
+    }
+  }
+  const items = jobs.map((j, i) => ({ key: j.key, result: classifyLine(glyphs[i], segs.filter((x) => x.job === i).map((x) => x.seg), j.w, j.h, keepText) }));
+  return { items, segments: segs.length };
+}
+
+async function pump() {
+  if (busy || !session) return;
+  busy = true;
+  try {
+    while (queue.length) {
+      const t0 = performance.now();
+      // Newest first: what is on screen now matters more than what scrolled past.
+      const jobs = queue.splice(Math.max(0, queue.length - maxLines));
+      // One retry (a transient GPU or allocation failure); then the lines stay covered.
+      const r = await recognise(jobs).catch(() => recognise(jobs));
+      port.postMessage({ type: "results", items: r.items, ms: performance.now() - t0, segments: r.segments });
+    }
+  } catch (e) {
+    port.postMessage({ type: "error", message: String(e) });
+  } finally {
+    busy = false;
+  }
+}
+
+function onMessage(m: OcrIn) {
+  const fatal = (message: string) => port.postMessage((ready = { type: "error", message }));
+  if (m.type === "init") void init(m).then(pump, (e) => fatal(String(e)));
+  else if (m.type === "fail") fatal(m.message);
+  else {
+    queue.push(...m.jobs);
+    // Bounded backlog: the oldest jobs go (scrolled past, or re-sent by the engine if still on screen).
+    let bytes = queue.reduce((n, j) => n + j.data.length, 0);
+    const drop: string[] = [];
+    while (queue.length > 1 && (queue.length > MAX_QUEUE || bytes > MAX_QUEUE_BYTES)) {
+      const j = queue.shift()!;
+      bytes -= j.data.length;
+      drop.push(j.key);
+    }
+    if (drop.length) port.postMessage({ type: "dropped", keys: drop });
+    void pump();
+  }
+}
+
+// One recognition worker serves the page; each frame worker (a new capture)
+// takes it over through a fresh MessagePort, dropping the old one's queue.
+self.onmessage = (e: MessageEvent) => {
+  if (e.data?.type === "port") {
+    queue.length = 0;
+    const p = e.data.port as MessagePort;
+    port = p as unknown as typeof port;
+    p.onmessage = (ev) => onMessage(ev.data as OcrIn);
+    if (ready) port.postMessage(ready);
+    return;
+  }
+  onMessage(e.data as OcrIn);
+};

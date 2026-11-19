@@ -146,6 +146,8 @@ The sender page has exactly two command inputs: the local WebSocket from the dae
 | `pause` | restrictive | yes | Stops audio and video. Sets the pause latch. |
 | `resume` | **permissive** | no | Re-exposes a screen the owner hid on purpose. |
 | `mode` text/motion | neutral | yes | Quality only. |
+| `safe` `{on: true}` | restrictive | yes | Redacts sensitive data before encoding (FEATURES.md "Safe mode"). |
+| `safe` `{on: false}` | **permissive** | no | Sends sensitive data unredacted. |
 | `lock` `{locked: true}` | restrictive | yes | No new admissions. Sets the lock latch. |
 | `lock` `{locked: false}` | **permissive** | no | Reopens admissions. |
 | `kick` | restrictive | yes | Removes access; rekeys. |

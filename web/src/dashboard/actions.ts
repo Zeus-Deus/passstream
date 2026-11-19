@@ -12,6 +12,7 @@ export type RemoteOp =
   | "stop"
   | "pause"
   | "mode"
+  | "safe"
   | "lock"
   | "kick"
   | "knock.deny"
@@ -27,6 +28,8 @@ export function remoteAllowed(op: string, args: Record<string, unknown> = {}): b
       return keys.length === 0;
     case "mode":
       return only("mode") && (args.mode === "text" || args.mode === "motion");
+    case "safe":
+      return only("on") && args.on === true;
     case "lock":
       return only("locked") && args.locked === true;
     case "kick":
@@ -36,7 +39,7 @@ export function remoteAllowed(op: string, args: Record<string, unknown> = {}): b
     case "ban":
       return only("connection_id") && typeof args.connection_id === "string";
     default:
-      return false; // resume, unfreeze, pin.*, knock.approve, unlock, ...
+      return false; // resume, unfreeze, pin.*, knock.approve, unlock, safe mode off, ...
   }
 }
 

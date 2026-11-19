@@ -110,7 +110,7 @@ try {
       const publisher = await context.newPage();
       pages.push(publisher);
       publisher.on("pageerror", e => errors.push(redactText(e)));
-      await publisher.goto(stream.host_url.replace("/host#", "/host?test=1#"));
+      await publisher.goto(stream.host_url.replace("/host#", "/host?test=1&safe=0#"));
       await publisher.getByTestId("test-source").click();
       await publisher.getByTestId("reveal").click();
       await publisher.getByTestId("reveal-confirm").click();

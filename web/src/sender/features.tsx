@@ -72,8 +72,8 @@ export function Preview({ core, act }: { core: SenderCore; act: Act }) {
   useEffect(() => input.setTool(tool), [input, tool]);
   useEffect(() => {
     const v = video.current;
-    if (v && v.srcObject !== core.capture) {
-      v.srcObject = core.capture;
+    if (v && v.srcObject !== core.preview) {
+      v.srcObject = core.preview;
       void v.play().catch(() => undefined);
     }
   });

@@ -122,6 +122,102 @@ WebSocket's HMAC: `/owner` sends its short-lived bearer over loopback. With
 
 Design notes for the ranked features in [PLAN.md](PLAN.md) "Features". Each track keeps its own section.
 
+## Safe mode
+
+Safe mode redacts sensitive data (email addresses, card numbers, IBANs, phone
+numbers, money amounts and API secrets) from the outgoing video in the sender
+page, before encoding. It is **on by default** for every new stream; `passstream
+share --no-safe` or the daemon's `start {safe: false}` starts without it. Turning
+it on is restrictive, so any channel may do it, the dashboard included. Turning
+it off sends sensitive data unredacted, so it is **local only** (sender window,
+`passstream safe off`, the plugin), like unlocking (HOST-CONTROL §4.2). The
+sender reports it as `SenderState.safe`; it is not a latch, and the daemon
+restores it from its record after a sender reload.
+
+### How it works (`web/src/redact/`)
+
+Everything runs in the sender page; the server and SFU never see plaintext.
+
+1. `MediaStreamTrackProcessor` hands each capture frame to a worker, which
+   copies it as RGBX and compares it exactly with the previous frame in 64×32
+   tiles. Unchanged frames cost the copy and the compare (about 4 ms at 1080p).
+2. Bands around changed tiles are searched for text lines with a classical
+   detector: edges in luma and in HSL lightness (luma alone misses pure blue
+   on black), long vertical borders removed, connected components, groups
+   taller than 30 px split into rows (a box outline would weld two rows), and
+   words on one row merged. A detected box with no ink found inside stays
+   covered. Each line is
+   tightened to its exact ink box and keyed by a 64-bit hash of its pixels.
+3. A line with a cached verdict costs nothing, wherever it is (so scrolling
+   mostly hits the cache). A new line is **covered until it has been checked**
+   (fail-closed) and sent to a recognition worker: PP-OCRv5's Latin recogniser
+   (`web/public/assets/redact/`, Apache-2.0) in ONNX Runtime Web, on WebGPU when
+   the browser offers an adapter and on threaded WASM otherwise.
+4. `classify.ts` finds emails, card numbers (Luhn, or grouped like a card,
+   including a partly typed or partly hidden one), IBANs, phone numbers (a `+`,
+   a US format or a phone keyword; never dates, versions or IPs), money next to
+   a currency, SSNs and secrets (known token prefixes, `KEY=`/`password:`
+   values, URL credentials, and any 32+ character token mixing upper and lower
+   case and digits, which covers PEM key bodies; hex hashes stay visible).
+   Letters OCR reads for digits (O, I, l, S, B) are undone inside mostly-digit
+   chunks first. CTC character positions limit the cover to the span. A line
+   stays covered when its reading can't be trusted: a low-confidence digit or
+   `@`, low confidence overall, or far fewer characters than its width holds
+   (including none).
+5. Covers are painted into the frame's pixels: the surrounding background
+   colour and a soft bar that reads as blurred text. No hidden pixel is used,
+   so nothing can be recovered (a real blur can leak digits). A frame with no
+   covers passes through untouched. When a check finishes on a static screen,
+   the last frame is sent again with the new covers.
+
+The redacted track is the only video that leaves the page: both senders
+(native and the 180p thumbnail), resume after a pause, the host's preview and
+local snapshots and recordings. The redactor reads its own clone of the
+capture, and the capture track itself stays disabled while safe mode is on: a
+sender not yet switched to the redacted track (or refusing the switch) can
+only send black. If safe mode is on but can't run, the paused picture is sent
+instead; if the recognition worker fails to load or crashes, all text stays
+covered and the status is `unavailable`. If the browser returns blank pixels for every frame
+(Chromium with `--enable-features=Vulkan` does on NVIDIA/Wayland), the engine
+can't see text, so it sends a neutral frame and reports `unavailable`.
+
+Pages carry `script-src 'wasm-unsafe-eval'` (WASM compilation, not JS eval)
+and COOP/COEP cross-origin isolation, for threaded WASM.
+
+### Cost (measured, `test/redact/bench.mjs`)
+
+Ryzen 5 7600, Chromium 156, 1080p tab capture of a mail, terminal and bank
+scene with 29–37 planted sensitive strings:
+
+| | Added delay per frame (p50 / p95) | Covered until checked |
+|---|---|---|
+| Static screen | 0 (no frames) | – |
+| Typing | 8.5 / 13 ms | ~25 ms per typed line |
+| Scrolling | 15 / 18 ms | 25–60 ms (cache hits) |
+| New window | ~12 ms | ~0.5 s (CPU) |
+| Whole new screen (cold) | – | ~1.1 s (CPU) |
+
+Recall on the planted strings was 100% in every scenario, including ones
+partly behind another window. The output hop itself costs 0.1 ms; the added
+delay is the worker's work (copy 1.6, diff 2.4, detection 2–4, paint 1 ms).
+Holding frames until their new lines were checked was measured and dropped: on
+CPU, 30 ms of hold only halved the brief covers on a line being typed.
+
+Hardware: the per-frame cost is small on any recent CPU and scales with
+resolution. How long new text stays covered scales with recognition speed:
+CPU cores for WASM, or a GPU through WebGPU (recognising a full screen of 60
+lines took ~150 ms batched on an RTX 3090 against ~0.8 s on 6 CPU threads,
+measured on the recogniser alone). On Linux, Chromium only exposes WebGPU on NVIDIA with the
+Vulkan feature, which breaks frame readback, so safe mode uses the CPU there.
+
+Limits: this is assistance, not a guarantee. Text the detector can't find
+(a contrast step under 28, text over 80 px tall, text on photos or busy
+gradients), formats the rules don't know, and non-Latin scripts may pass.
+Recognition failures fail closed: a failed batch is retried once, then the
+screen's text stays covered and the sender shows `unavailable`. Changing text (a video, a scrolling log) stays
+covered while it changes. Frames sent before safe mode was turned on can't be
+recalled. Embedding the model and runtime adds about 36 MB to the binary.
+
 ## Track D2: live quality HUD, privacy curtain, laser pointer and annotations
 
 Status: design (2026-11-08). Code: `web/src/hud/`, `web/src/annotations/`, `e2ee/src/annotation.ts`, plus small hook-ups in the viewer, the sender page and the CLI.

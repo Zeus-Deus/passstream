@@ -65,7 +65,7 @@ describe("LiveStream", () => {
   it("offers only tightening actions; loosening ones are disabled with the reason", async () => {
     await renderLive(stream({ effective: { ...stream().effective!, access: { ...stream().effective!.access, latches: { locked: true, paused: true, frozen: true } } } }));
     const actions = screen.getByTestId("stream-actions");
-    for (const name of ["Resume", "Unlock", "Unfreeze", "Rotate PIN"]) {
+    for (const name of ["Resume", "Unlock", "Unfreeze", "Rotate PIN", "Safe mode off"]) {
       const b = within(actions).getByRole("button", { name });
       expect(b).toBeDisabled();
       expect(b.getAttribute("title")).toBe(LOCAL_ONLY);
@@ -107,6 +107,19 @@ describe("LiveStream", () => {
       ["lock", { locked: true }],
       ["pause", {}],
     ]);
+  });
+
+  it("shows safe mode and can only turn it on", async () => {
+    await renderLive();
+    expect(screen.getByText("SAFE MODE")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Safe mode on" })).toBeNull();
+    cleanup();
+    await renderLive(stream({ effective: { ...stream().effective!, safe: false } }));
+    expect(screen.queryByText("SAFE MODE")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Safe mode off" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Safe mode on" }));
+    await screen.findByText(/Safe mode on: sensitive data is redacted/);
+    expect(commands.map((c) => [c.op, c.args])).toEqual([["safe", { on: true }]]);
   });
 
   it("handles a 403 local_owner_required gracefully", async () => {

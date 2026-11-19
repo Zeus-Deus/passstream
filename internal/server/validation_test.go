@@ -37,7 +37,7 @@ func TestContractErrorStatuses(t *testing.T) {
 func TestSenderRequiredFieldsAndBounds(t *testing.T) {
 	state := validState(store.ID(), store.ID())
 	b, _ := json.Marshal(state)
-	for _, change := range []func(map[string]json.RawMessage){func(m map[string]json.RawMessage) { delete(m, "access") }, func(m map[string]json.RawMessage) { m["admissions"] = json.RawMessage("null") }, func(m map[string]json.RawMessage) { m["seq"] = json.RawMessage("9007199254740992") }, func(m map[string]json.RawMessage) { m["access"] = json.RawMessage(`{"pin":null}`) }, func(m map[string]json.RawMessage) { m["v"] = json.RawMessage("2") }} {
+	for _, change := range []func(map[string]json.RawMessage){func(m map[string]json.RawMessage) { delete(m, "access") }, func(m map[string]json.RawMessage) { m["safe"] = json.RawMessage("null") }, func(m map[string]json.RawMessage) { m["admissions"] = json.RawMessage("null") }, func(m map[string]json.RawMessage) { m["seq"] = json.RawMessage("9007199254740992") }, func(m map[string]json.RawMessage) { m["access"] = json.RawMessage(`{"pin":null}`) }, func(m map[string]json.RawMessage) { m["v"] = json.RawMessage("2") }} {
 		var m map[string]json.RawMessage
 		_ = json.Unmarshal(b, &m)
 		change(m)

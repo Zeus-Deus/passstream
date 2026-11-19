@@ -11,7 +11,7 @@ import { artifactNeedles } from "./artifact-needles.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -190,9 +190,10 @@ async function diag(v, sp) {
   return { viewer: vd, sender: sd };
 }
 /** Start a share through the CLI; Playwright plays the daemon-launched sender window. */
-async function share(args = [], { tone = TONE_HZ, source = "clock", usePicker = false } = {}) {
+async function share(args = [], { tone = TONE_HZ, source = "clock", usePicker = false, safe = false } = {}) {
   const before = new Set(readdirSync(launches));
-  const pending = cliAsync(["share", "--no-wait", "--json", ...args]);
+  // Safe mode would cover the timing sources' changing text: only its own tests turn it on.
+  const pending = cliAsync(["share", "--no-wait", "--json", ...(safe ? [] : ["--no-safe"]), ...args]);
   let file;
   for (let i = 0; i < 400 && !file; i++) {
     file = readdirSync(launches).find((f) => f.endsWith(".args") && !before.has(f));
@@ -1548,6 +1549,568 @@ try {
     const recovered = Date.now() - t0;
     const ev = await v.evaluate(() => window.passstreamViewer.events.map((e) => e.kind + ":" + (e.detail ?? "")));
     return { pass: ev.filter((e) => e === "admitted:grant").length >= 1 && !ev.slice(2).some((e) => e === "hello:pin"), recovery_ms: recovered, events: ev };
+  });
+
+  await test("safe_mode_ack_survives_sender_reload", async () => {
+    const { page } = await share([], { source: "sensitive", tone: 0 });
+    const record = join(env.XDG_STATE_HOME, "passstream/host-state.json");
+    const savedSafe = () => JSON.parse(readFileSync(record, "utf8")).safe;
+    const before = savedSafe();
+
+    const protectedCapture = () => page.evaluate(() => {
+      const sender = window.passstreamSender;
+      return sender.safe && !sender.capture.getVideoTracks()[0].enabled;
+    });
+
+    // A nonempty directory blocks the daemon's atomic write while the old record stays readable.
+    const blocked = join(base, "blocked-state-write");
+    mkdirSync(join(blocked, "hold"), { recursive: true });
+    const withFailedWrite = async (run) => {
+      renameSync(blocked, record + ".tmp");
+      try {
+        return await run();
+      } finally {
+        renameSync(record + ".tmp", blocked);
+      }
+    };
+    const on = await withFailedWrite(async () => {
+      await page.getByTestId("safe").click();
+      const message = await page.getByTestId("command-error").innerText();
+      return { message, saved: savedSafe(), protected: await protectedCapture() };
+    });
+    // A failed tightening must recover without another owner command.
+    for (let i = 0; i < 100 && !savedSafe(); i++) await sleep(100);
+    const retried = savedSafe();
+    const retry = cli(["safe", "on", "--json"]);
+    const atReply = savedSafe();
+    const reopen = async () => {
+      await page.reload();
+      await page.getByTestId("test-source").click({ timeout: 15000 });
+      return protectedCapture();
+    };
+    const protectedAfterOn = await reopen();
+    const off = await withFailedWrite(async () => {
+      const result = cli(["safe", "off", "--json"]);
+      return {
+        failed: result.code !== 0 && JSON.parse(result.stderr || "{}").error?.code === "storage",
+        saved: savedSafe(), protected: await protectedCapture(),
+      };
+    });
+    const protectedAfterOff = await reopen();
+    return {
+      pass: before === false && /on for this capture.*after reload/i.test(on.message) && !on.saved && on.protected &&
+        retried && retry.code === 0 && atReply && protectedAfterOn && off.failed && off.saved && off.protected &&
+        protectedAfterOff && savedSafe(),
+      before, on, retried, atReply, protectedAfterOn, off, protectedAfterOff,
+    };
+  });
+
+  await test("safe_mode_opt_out_receipt_survives_sender_reload", async () => {
+    const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+    const record = join(env.XDG_STATE_HOME, "passstream/host-state.json");
+    const saved = () => JSON.parse(readFileSync(record, "utf8"));
+    let loseAck = true;
+    await page.routeWebSocket("**/local/v1/sender", (socket) => {
+      const daemon = socket.connectToServer();
+      let attempt;
+      let prepared = false;
+      socket.onMessage((frame) => {
+        // Freeze the record at preparation: neither a correction after timeout
+        // nor a final off report after success can settle it before reload.
+        const message = JSON.parse(frame);
+        if (message.type === "state") {
+          if (prepared) return;
+          if (message.state.safe && message.safe_off) attempt = message.safe_off;
+        }
+        daemon.send(frame);
+      });
+      daemon.onMessage((frame) => {
+        const message = JSON.parse(frame);
+        if (message.type === "state_ack" && attempt && message.safe_off === attempt) {
+          prepared = true;
+          if (loseAck) return;
+        }
+        socket.send(frame);
+      });
+    });
+    const reopen = async () => {
+      await page.reload();
+      await page.getByTestId("test-source").click({ timeout: 15000 });
+      return page.evaluate(() => {
+        const sender = window.passstreamSender;
+        return { safe: sender.safe, rawEnabled: sender.capture.getVideoTracks()[0].enabled };
+      });
+    };
+    await reopen();
+    const failed = await cliAsync(["safe", "off", "--json"]);
+    const unconfirmed = saved();
+    const afterTimeout = await reopen();
+    loseAck = false;
+    const success = await cliAsync(["safe", "off", "--json"]);
+    const confirmed = saved();
+    const afterSuccess = await reopen();
+    // The previous successful receipt cannot approve another attempt if
+    // IndexedDB rejects its new receipt after the daemon's ack.
+    const on = await cliAsync(["safe", "on", "--json"]);
+    await page.evaluate(() => {
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        if (String(key).startsWith("ps:safe-off:")) throw new DOMException("Full", "QuotaExceededError");
+        return put.apply(this, arguments);
+      };
+    });
+    const refused = await cliAsync(["safe", "off", "--json"]);
+    const afterReceiptFailure = await reopen();
+    await page.evaluate(() => {
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        if (String(key).startsWith("ps:safe-off:") && JSON.parse(value)?.startsWith("final:"))
+          throw new DOMException("Finalization failed", "QuotaExceededError");
+        return put.apply(this, arguments);
+      };
+    });
+    const finalFailure = await cliAsync(["safe", "off", "--json"]);
+    const finalError = JSON.parse(finalFailure.stderr).error;
+    const protectedAtReply = await page.evaluate(() => {
+      const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+      return sender.safe && !raw.enabled && sender.session.outgoing !== raw;
+    });
+    const afterFinalFailure = await reopen();
+    return {
+      pass: failed.code !== 0 && JSON.parse(failed.stderr).error?.code === "storage" &&
+        unconfirmed.safe && !!unconfirmed.safe_off && afterTimeout.safe && !afterTimeout.rawEnabled &&
+        success.code === 0 && confirmed.safe && !!confirmed.safe_off && confirmed.safe_off !== unconfirmed.safe_off &&
+        !afterSuccess.safe && afterSuccess.rawEnabled && on.code === 0 &&
+        refused.code !== 0 && JSON.parse(refused.stderr).error?.code === "storage" &&
+        afterReceiptFailure.safe && !afterReceiptFailure.rawEnabled && finalFailure.code !== 0 &&
+        finalError.code === "storage" && finalError.details?.applied === false && protectedAtReply &&
+        afterFinalFailure.safe && !afterFinalFailure.rawEnabled,
+      afterTimeout, afterSuccess, afterReceiptFailure, afterFinalFailure, protectedAtReply, rejected: failed.code, accepted: success.code,
+    };
+  });
+
+  for (const scenario of ["tighten", "failed_daemon_save", "failed_both_saves", "finalizing_failed_both_saves", "new_opt_out"]) {
+    await test(`safe_mode_pending_receipt_${scenario}`, async () => {
+      const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+      const record = join(env.XDG_STATE_HOME, "passstream/host-state.json");
+      const saved = () => JSON.parse(readFileSync(record, "utf8"));
+      const failRevoke = scenario.endsWith("failed_both_saves");
+      const failedSave = scenario === "failed_daemon_save" || failRevoke;
+      const replace = scenario === "new_opt_out";
+
+      const first = page.evaluate((holdFinal) => {
+        const sender = window.passstreamSender;
+        const key = `ps:safe-off:${sender.streamId}`;
+        const put = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (value, target) {
+          const request = put.apply(this, arguments);
+          if (target === key && (!holdFinal || JSON.parse(value).startsWith("final:"))) {
+            IDBObjectStore.prototype.put = put;
+            // Keep the actual transaction alive after the receipt put is queued.
+            let held = true;
+            const keepAlive = () => {
+              if (held) this.get(key).onsuccess = keepAlive;
+            };
+            keepAlive();
+            window.releaseReceipt = (abort) => {
+              held = false;
+              if (abort) this.transaction.abort();
+            };
+            const db = this.transaction.db;
+            window.readReceipt = () => new Promise((resolve, reject) => {
+              const read = db.transaction("kv").objectStore("kv").get(key);
+              read.onsuccess = () => resolve(JSON.parse(read.result ?? "null"));
+              read.onerror = () => reject(read.error);
+            });
+          }
+          return request;
+        };
+        return sender.command("window", "", "safe", { on: false });
+      }, scenario === "finalizing_failed_both_saves");
+      await page.waitForFunction(() => !!window.releaseReceipt);
+      const prepared = saved();
+      // Preserve the prepared record across a real daemon write failure and restart.
+      if (failedSave) mkdirSync(join(record + ".tmp", "hold"), { recursive: true });
+      const senderURL = page.url();
+      let race, disk;
+      try {
+        race = await page.evaluate(async ({ replace, failRevoke }) => {
+          const sender = window.passstreamSender;
+          if (failRevoke) {
+            const put = IDBObjectStore.prototype.put;
+            IDBObjectStore.prototype.put = function (value, target) {
+              if (target === `ps:safe-off:${sender.streamId}` && value === "null")
+                throw new DOMException("Revocation failed", "QuotaExceededError");
+              return put.apply(this, arguments);
+            };
+          }
+          let releaseAck;
+          if (replace) {
+            // Deliver the tightening ack only after the next opt-out commits.
+            const hold = new Promise((resolve) => { releaseAck = resolve; });
+            const report = sender.reportNow.bind(sender);
+            sender.reportNow = async () => {
+              sender.reportNow = report;
+              const saved = await report();
+              await hold;
+              return saved;
+            };
+          }
+          const on = sender.command("window", "", "safe", { on: true });
+          const protectedNow = sender.safe && !sender.capture.getVideoTracks()[0].enabled;
+          const pending = replace && sender.command("window", "", "safe", { on: false });
+          window.releaseReceipt(replace);
+          const next = await pending;
+          releaseAck?.();
+          return { protectedNow, on: await on, next, receipt: await window.readReceipt() };
+        }, { replace, failRevoke });
+        disk = saved();
+        if (failedSave) {
+          await killDaemon();
+          await page.goto("about:blank");
+        }
+      } finally {
+        if (failedSave) renameSync(record + ".tmp", join(base, `blocked-receipt-race-${scenario}`));
+      }
+      const off = await first;
+      if (failedSave) {
+        await startDaemon();
+        await page.goto(senderURL);
+      } else {
+        await page.reload();
+      }
+      await page.getByTestId("test-source").click({ timeout: 15000 });
+      const reload = await page.evaluate(() => ({
+        safe: window.passstreamSender.safe,
+        rawEnabled: window.passstreamSender.capture.getVideoTracks()[0].enabled,
+        rawOutgoing: window.passstreamSender.session.outgoing === window.passstreamSender.capture.getVideoTracks()[0],
+      }));
+      const onResult = failedSave ? race.on.error?.code === "storage" && race.on.error.details?.applied === true
+        : replace ? race.on.error?.code === "conflict" : race.on.ok;
+      const stored = replace ? race.next.ok && race.receipt?.startsWith("final:") && race.receipt !== `final:${prepared.safe_off}` &&
+        (disk.safe ? race.receipt === `final:${disk.safe_off}` : !disk.safe_off)
+        : race.receipt === (failRevoke ? prepared.safe_off : null) && disk.safe &&
+          (failedSave ? disk.safe_off === prepared.safe_off : !disk.safe_off);
+      return {
+        pass: prepared.safe && !!prepared.safe_off && off.error?.code === "conflict" && race.protectedNow &&
+          onResult && stored && reload.safe === !replace && reload.rawEnabled === replace && reload.rawOutgoing === replace,
+        off, on: race.on, next: race.next, protectedNow: race.protectedNow, stored, reload,
+      };
+    });
+  }
+
+  for (const stage of ["provisional", "provisional_then_reattached", "finalized", "finalized_then_tightened"]) {
+    await test(`safe_mode_interrupted_after_${stage}_commit`, async () => {
+      const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+      const url = page.url();
+      const record = join(env.XDG_STATE_HOME, "passstream/host-state.json");
+      await page.evaluate((stage) => {
+        const sender = window.passstreamSender, store = sender.storage;
+        const update = store.update.bind(store);
+        store.update = async (...args) => {
+          const value = await update(...args);
+          if (args[0] === `ps:safe-off:${sender.streamId}` &&
+              typeof value === "string" && value.startsWith("final:") === stage.startsWith("finalized")) {
+            // The real strict commit finished. Withhold its completion from the command.
+            store.update = update;
+            await new Promise((resolve) => { window.deliverCommit = resolve; });
+          }
+          return value;
+        };
+      }, stage);
+      const reattach = stage === "provisional_then_reattached";
+      const command = reattach
+        ? page.evaluate(() => window.passstreamSender.command("window", "", "safe", { on: false }))
+        : cliAsync(["safe", "off", "--json"]);
+      await page.waitForFunction(() => !!window.deliverCommit);
+      const disk = JSON.parse(readFileSync(record, "utf8"));
+      const before = await page.evaluate(async () => {
+        const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+        return { protected: sender.safe && !raw.enabled && sender.session.outgoing !== raw,
+          receipt: await sender.storage.get(`ps:safe-off:${sender.streamId}`) };
+      });
+      let on, protectedAfterRetry, protectedAtReply;
+      if (reattach) {
+        await killDaemon();
+        await page.waitForFunction(() => !window.passstreamSender.cfg.channel.attached);
+        await startDaemon();
+        await page.waitForFunction(() => window.passstreamSender.cfg.channel.attached);
+        await page.evaluate(() => window.deliverCommit());
+        await command;
+        protectedAfterRetry = await page.evaluate(async () => {
+          const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+          return await sender.reportNow() && sender.safe && !raw.enabled && sender.session.outgoing !== raw;
+        });
+        const retried = JSON.parse(readFileSync(record, "utf8"));
+        protectedAfterRetry &&= retried.safe && !retried.safe_off;
+        await page.reload();
+      } else if (stage === "finalized_then_tightened") {
+        on = await page.evaluate(async () => {
+          const result = await window.passstreamSender.command("window", "", "safe", { on: true });
+          window.deliverCommit();
+          return result;
+        });
+        await command;
+        protectedAtReply = await page.evaluate(() => {
+          const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+          return sender.safe && !raw.enabled && sender.session.outgoing !== raw;
+        });
+        await page.reload();
+      } else {
+        await killDaemon();
+        await page.goto("about:blank");
+        await startDaemon();
+        await page.goto(url);
+      }
+      const reply = await command;
+      await page.getByTestId("test-source").click({ timeout: 15000 });
+      const after = await page.evaluate(() => {
+        const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+        return { safe: sender.safe, enabled: raw.enabled, outgoing: sender.session.outgoing === raw };
+      });
+      const raw = stage === "finalized";
+      const completed = reattach ? protectedAfterRetry && reply.error?.code === "storage" && reply.error.details?.applied === false
+        : stage === "finalized_then_tightened" ? on.ok && protectedAtReply && reply.code === 0 : reply.code !== 0;
+      const expectedReceipt = stage.startsWith("provisional") ? disk.safe_off : `final:${disk.safe_off}`;
+      return { pass: completed && disk.safe && !!disk.safe_off && before.receipt === expectedReceipt &&
+        before.protected && after.safe === !raw && after.enabled === raw && after.outgoing === raw,
+        protectedBefore: before.protected, protectedAfterRetry, reply: reply.code ?? reply.error?.code, after };
+    });
+  }
+
+  for (const stop of ["end", "abandon"]) {
+    for (const committed of [false, true]) {
+      await test(`safe_mode_${stop}_${committed ? "after" : "before"}_opt_out_commit`, async () => {
+        const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+        await page.evaluate((committed) => {
+          const sender = window.passstreamSender;
+          const update = sender.storage.update.bind(sender.storage);
+          sender.storage.update = async (key, fn, signal) => {
+            if (!signal || key !== `ps:safe-off:${sender.streamId}`) return update(key, fn, signal);
+            const hold = () => new Promise((resolve) => { window.releaseFinalization = resolve; });
+            if (!committed) await hold();
+            const receipt = await update(key, fn, signal);
+            if (committed) await hold();
+            return receipt;
+          };
+          window.optOut = sender.command("window", "", "safe", { on: false });
+        }, committed);
+        await page.waitForFunction(() => !!window.releaseFinalization);
+        const result = await page.evaluate(async (stop) => {
+          const sender = window.passstreamSender, session = sender.session;
+          const raw = sender.capture.getVideoTracks()[0];
+          // Count even a transient exposure that teardown subsequently corrects.
+          let rawEnables = 0, rawSelections = 0;
+          const enabled = Object.getOwnPropertyDescriptor(MediaStreamTrack.prototype, "enabled");
+          Object.defineProperty(raw, "enabled", {
+            get: () => enabled.get.call(raw),
+            set(value) { if (value) rawEnables++; enabled.set.call(raw, value); },
+          });
+          const swap = session.setOutgoing.bind(session);
+          const installed = Promise.withResolvers();
+          session.setOutgoing = async (track) => {
+            if (track === raw) rawSelections++;
+            const ok = await swap(track);
+            installed.resolve(track);
+            return ok;
+          };
+          const stopping = stop === "end" ? sender.end("stopped", false) : sender.abandon();
+          const slate = stop === "end" ? await installed.promise : null;
+          const slateOnWire = () => !!slate && slate !== raw && session.outgoing === slate &&
+            session.videoSender.track === slate && session.thumbnailSender.track === slate;
+          const installedAtRelease = stop === "abandon" || slateOnWire();
+          window.releaseFinalization();
+          const reply = await window.optOut;
+          const protectedAtReply = !raw.enabled && session.outgoing !== raw &&
+            (stop === "abandon" || slateOnWire());
+          await stopping;
+          return { reply, installedAtRelease, protectedAtReply, rawEnables, rawSelections };
+        }, stop);
+        // A successor recovers the durable decision even when the abandoned
+        // sender never got to apply it to its own outgoing track.
+        let recovered = true;
+        if (stop === "abandon") {
+          await page.reload();
+          await page.getByTestId("test-source").click({ timeout: 15000 });
+          recovered = await page.evaluate((committed) => {
+            const sender = window.passstreamSender, raw = sender.capture.getVideoTracks()[0];
+            return sender.safe === !committed && raw.enabled === committed &&
+              (sender.session.outgoing === raw) === committed;
+          }, committed);
+        }
+        const expectedReply = committed ? result.reply.ok : result.reply.error?.code === "conflict";
+        return { pass: expectedReply && result.installedAtRelease && result.protectedAtReply &&
+          !result.rawEnables && !result.rawSelections && recovered, ...result, recovered };
+      });
+    }
+  }
+
+  for (const refused of ["main", "thumbnail", "both"]) {
+    await test(`safe_mode_ended_slate_refused_by_${refused}`, async () => {
+      const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+      return page.evaluate(async (refused) => {
+        const sender = window.passstreamSender, session = sender.session;
+        const raw = sender.capture.getVideoTracks()[0];
+        const { input, track: output } = sender.redactor;
+        const senders = { main: session.videoSender, thumbnail: session.thumbnailSender };
+        const wasLive = input.readyState === "live" && input.enabled && output.enabled &&
+          Object.values(senders).every((s) => s.track === output);
+        const rejects = (name) => refused === "both" || refused === name;
+        for (const [name, s] of Object.entries(senders)) {
+          if (rejects(name)) s.replaceTrack = async () => { throw new DOMException("Slate refused", "InvalidStateError"); };
+        }
+
+        // Sample the real generated frames. Green is drawn on the capture only after end().
+        const pixel = new OffscreenCanvas(1, 1).getContext("2d", { willReadFrequently: true });
+        const reader = new MediaStreamTrackProcessor({ track: output }).readable.getReader();
+        const first = await reader.read();
+        first.value.close();
+        let greenFrames = 0;
+        const sample = async () => {
+          for (;;) {
+            const { value: frame, done } = await reader.read();
+            if (done) return;
+            pixel.drawImage(frame, 8, 8, 1, 1, 0, 0, 1, 1);
+            frame.close();
+            const [r, g, b] = pixel.getImageData(0, 0, 1, 1).data;
+            if (g > 200 && r < 50 && b < 50) greenFrames++;
+          }
+        };
+        const sampled = sample();
+        const reporting = Promise.withResolvers(), ack = Promise.withResolvers();
+        const channel = sender.cfg.channel, sendState = channel.sendState.bind(channel);
+        channel.sendState = async (...args) => {
+          channel.sendState = sendState;
+          const saved = await sendState(...args);
+          reporting.resolve();
+          await ack.promise;
+          return saved;
+        };
+        const stopping = sender.end("stopped", false);
+        const cutOff = !raw.enabled && !output.enabled && output.readyState === "ended" && input.readyState === "ended";
+        const ctx = raw.canvas.getContext("2d");
+        const marker = setInterval(() => {
+          ctx.fillStyle = "#00ff00";
+          ctx.fillRect(0, 0, 32, 32);
+          raw.requestFrame();
+        }, 40);
+        await reporting.promise;
+        const slate = session.outgoing;
+        const tracksMatch = !!slate && slate !== raw && slate !== output &&
+          Object.entries(senders).every(([name, s]) => s.track === (rejects(name) ? output : slate));
+        await new Promise((r) => setTimeout(r, 300));
+        const beforeAck = greenFrames;
+        ack.resolve();
+        await stopping;
+        clearInterval(marker);
+        await reader.cancel();
+        await sampled;
+        return { pass: wasLive && cutOff && tracksMatch && greenFrames === 0,
+          wasLive, cutOff, tracksMatch, beforeAck, duringGrace: greenFrames - beforeAck };
+      }, refused);
+    });
+  }
+
+  for (const late of ["resume", "failed_swap"]) {
+    await test(`safe_mode_ended_slate_survives_late_${late}`, async () => {
+      const { page } = await share([], { source: "sensitive", tone: 0 });
+      await page.evaluate(async (late) => {
+        const sender = window.passstreamSender;
+        const hold = () => new Promise((resolve) => { window.finishMedia = resolve; });
+        if (late === "resume") {
+          await sender.command("window", "", "pause", {});
+          const update = sender.storage.update.bind(sender.storage);
+          sender.storage.update = async (...args) => {
+            const value = await update(...args);
+            if (args[0] === `ps:stream:${sender.streamId}`) {
+              sender.storage.update = update;
+              await hold();
+            }
+            return value;
+          };
+          window.mediaCommand = sender.command("window", "", "resume", {});
+        } else {
+          // One native sender reports a failed switch to redacted video after
+          // both senders have already accepted the ended slate.
+          const video = sender.session.videoSender, replace = video.replaceTrack.bind(video);
+          video.replaceTrack = async () => {
+            video.replaceTrack = replace;
+            await hold();
+            throw new DOMException("Switch refused", "InvalidStateError");
+          };
+          window.mediaCommand = sender.command("window", "", "safe", { on: true });
+        }
+      }, late);
+      await page.waitForFunction(() => !!window.finishMedia);
+      return page.evaluate(async () => {
+        const sender = window.passstreamSender, session = sender.session;
+        const raw = sender.capture.getVideoTracks()[0];
+        const installed = Promise.withResolvers();
+        const swap = session.setOutgoing.bind(session);
+        session.setOutgoing = async (track) => {
+          session.setOutgoing = swap;
+          const ok = await swap(track);
+          installed.resolve(track);
+          return ok;
+        };
+        const stopping = sender.end("stopped", false);
+        const slate = await installed.promise;
+        const onWire = session.videoSender.track === slate && session.thumbnailSender.track === slate;
+        window.finishMedia();
+        const reply = await window.mediaCommand;
+        await stopping;
+        return { pass: reply.ok && onWire && !!slate && slate !== raw && session.outgoing === slate && !raw.enabled };
+      });
+    });
+  }
+
+  await test("safe_mode_hides_card_from_viewers", async () => {
+    // web/src/source.ts sensitiveSource(): the card's digits and a plain line (1280×720 px).
+    const CARD = { x: 360, y: 206, w: 330, h: 30 }, PLAIN = { x: 64, y: 306, w: 400, h: 30 };
+    const s = await share([], { source: "sensitive", safe: true, tone: 0 });
+    const v = await viewer(s.link, { pin: s.pin });
+    await firstFrame(v);
+    // Luma standard deviation of a region of the decoded picture: text is high, a cover is flat.
+    const spread = (r) => v.evaluate((r) => {
+      const el = document.querySelector("video");
+      if (!el?.videoWidth) return -1;
+      const c = document.createElement("canvas");
+      c.width = el.videoWidth;
+      c.height = el.videoHeight;
+      const g = c.getContext("2d");
+      g.drawImage(el, 0, 0);
+      const k = el.videoWidth / 1280;
+      const d = g.getImageData(Math.round(r.x * k), Math.round(r.y * k), Math.round(r.w * k), Math.round(r.h * k)).data;
+      let n = 0, sum = 0, sq = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const l = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
+        n++, (sum += l), (sq += l * l);
+      }
+      return Math.sqrt(sq / n - (sum / n) ** 2);
+    }, r);
+    // Every sample counts, from the first decoded frame: the card must never be readable.
+    let maxCard = 0;
+    const until = async (cond, ms = 20000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        const x = { card: await spread(CARD), plain: await spread(PLAIN) };
+        maxCard = Math.max(maxCard, x.card);
+        if (cond(x)) return x;
+        await sleep(50);
+      }
+      return { card: await spread(CARD), plain: await spread(PLAIN), timeout: true };
+    };
+    // Safe mode on: plain text is revealed once checked, the card stays covered.
+    const on = await until((x) => x.plain > 30);
+    for (let i = 0; i < 20; i++) maxCard = Math.max(maxCard, await spread(CARD)), await sleep(50);
+    const maxCardOn = maxCard;
+    await v.screenshot({ path: join(out, "safe-mode-viewer-on.png") });
+    const reported = status()?.stream?.safe ?? status()?.safe;
+    const offCmd = cli(["safe", "off", "--json"]);
+    const off = await until((x) => x.card > 30);
+    await v.screenshot({ path: join(out, "safe-mode-viewer-off.png") });
+    // The cover's soft bar is not flat, but far flatter than readable digits.
+    return { pass: !on.timeout && maxCardOn < on.plain * 0.4 && on.plain > 30 && !off.timeout && off.card > 30 && offCmd.code === 0 && reported === true, on, maxCardOn, off, reported };
   });
 
   await test("pin_none_no_pin_screen_still_e2ee", async () => {

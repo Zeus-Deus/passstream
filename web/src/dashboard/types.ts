@@ -72,6 +72,8 @@ export interface Stream {
   effective: {
     phase: Phase;
     mode: "text" | "motion" | "unknown";
+    /** Safe mode: the sender redacts sensitive data before encoding. */
+    safe: boolean;
     access: Access;
     e2ee: E2EEState;
     health?: Health | null;

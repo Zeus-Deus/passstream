@@ -73,6 +73,7 @@ type SenderState struct {
 	Phase      string      `json:"phase"`
 	EndReason  string      `json:"end_reason,omitempty"`
 	Mode       string      `json:"mode"`
+	Safe       *bool       `json:"safe,omitempty"`
 	E2EE       E2EE        `json:"e2ee"`
 	Access     Access      `json:"access"`
 	Admissions []Admission `json:"admissions"`
@@ -80,6 +81,10 @@ type SenderState struct {
 	Ends       []End       `json:"ends"`
 	Health     *Health     `json:"health"`
 }
+
+// SafeEnabled reports protection only when the sender explicitly confirms it.
+func (s *SenderState) SafeEnabled() bool { return s.Safe != nil && *s.Safe }
+
 type Geo struct {
 	Country *string `json:"country"`
 	City    *string `json:"city"`
