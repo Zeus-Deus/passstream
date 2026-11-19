@@ -423,7 +423,10 @@ func finish(err error, jsonOut bool, env *Env) int {
 		e = proto.E("internal", "%s", err.Error())
 	}
 	printErr(env, jsonOut, e)
-	if e.Code == "port_not_owned" {
+	switch e.Code {
+	case "daemon_unreachable":
+		return exitUnreachable
+	case "port_not_owned":
 		return exitPort
 	}
 	return exitError
