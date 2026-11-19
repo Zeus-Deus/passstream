@@ -29,13 +29,26 @@ The web bundle is embedded at build time. Rebuild the Go binary after changing i
 
 Open <http://127.0.0.1:8080> and sign in using the owner key in `data/owner-key`. Keep this file private. The dashboard never displays stream PINs or media keys.
 
-For the local sender, put `build/passstream` on your PATH. Configure the server URL in `~/.config/passstream/config` and place a scoped API key in `~/.config/passstream/key` with mode `0600`:
+## Share from the local sender
+
+Use a Linux desktop session with `XDG_RUNTIME_DIR` set. Install Chromium and add the repository's `build` directory to your `PATH`.
+
+To use the CLI clipboard commands, install `wl-clipboard` and run them from a Wayland session.
+
+1. Open **Settings → API keys** in the dashboard. Enter the owner key and choose **Unlock key management**.
+2. Enter a label such as `Local sender`, select the **streams** scope, and choose **Create key**. Copy the new key while it's visible.
+3. Save the new key in `~/.config/passstream/key` with mode `0600`. Set the server URL in `~/.config/passstream/config` before running a sender command. If `XDG_CONFIG_HOME` is an absolute path, use its `passstream` directory for both files.
 
 ```ini
 server = http://127.0.0.1:8080
 ```
 
+The daemon reads the server URL at startup. If it was already running when you edited the config, stop any active share and run `passstream shutdown`. Run `passstream status` again until it shows the configured URL.
+
+Run `passstream pin --reveal` in a terminal outside the area you are sharing.
+
 ```sh
+passstream status
 passstream share --pin 4
 passstream copy link
 passstream pin --reveal
@@ -44,7 +57,7 @@ passstream resume
 passstream stop
 ```
 
-`--pin 4` chooses a four-digit PIN policy. Pick a screen, window or tab in the browser picker. Send the link and PIN separately. Disabling the PIN requires an explicit `--pin none`.
+`--pin 4` chooses a four-digit PIN policy. In the sender window, click **Share screen, window or tab**, then pick a source. The `share` command prints the link once the share is live. Send the link and PIN separately. Disabling the PIN requires an explicit `--pin none`.
 
 ## What is included
 
