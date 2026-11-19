@@ -956,8 +956,9 @@ func humanStatus(data any) string {
 	// Without a URL the daemon has never contacted a server: its "ok" is only a default.
 	server := fmt.Sprintf("server %v (%v)", d["server_url"], d["server"])
 	if url, _ := d["server_url"].(string); url == "" {
-		// The host reads $XDG_CONFIG_HOME first; naming only ~/.config would point some users at a file it ignores.
-		server = "server not configured (set server = URL in $XDG_CONFIG_HOME/passstream/config, or ~/.config/passstream/config if that is unset)"
+		// The host reads $XDG_CONFIG_HOME when it is an absolute path (daemon.DefaultPaths) and
+		// ~/.config otherwise; naming only one would point some users at a file it ignores.
+		server = "server not configured (set server = URL in $XDG_CONFIG_HOME/passstream/config when XDG_CONFIG_HOME is an absolute path, otherwise in ~/.config/passstream/config)"
 	}
 	lines := []string{fmt.Sprintf("daemon %v · %s · key %v · port %v (%v)", d["version"], server, d["key"], d["port_owner"], d["port_mode"])}
 	s, ok := field(data, "stream").(map[string]any)
