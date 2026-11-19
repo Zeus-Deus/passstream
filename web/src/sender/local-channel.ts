@@ -15,6 +15,7 @@ export type LatchesWire = { locked: boolean; paused: boolean; frozen: boolean };
 export interface Init {
   type: "init";
   attachment?: Key;
+  safe_off?: string;
   server_url: string;
   signal_url: string;
   stream: { id: string; publish_token: string; view_link_base: string };
@@ -97,7 +98,7 @@ export class LocalChannel {
   private done = false;
   private backoff = 100;
   private readonly started = Date.now();
-  private acks = new Map<number, () => void>();
+  private acks = new Map<number, (safeOff?: string) => void>();
   private ownerReplies = new Map<string, (r: { ok: boolean; data?: Record<string, unknown>; error?: { code: string } }) => void>();
   private prompt: PublishPrompt|null = null;
   private promptListeners = new Set<() => void>();
@@ -162,16 +163,16 @@ export class LocalChannel {
   }
 
   /** Report state; resolves when the daemon acked that seq (fsynced its latch mirror), or after 1 s. */
-  sendState(state: { seq: number }): Promise<boolean> {
-    if (!this.#send({ type: "state", state })) return Promise.resolve(false);
+  sendState(state: { seq: number }, safeOff?: string): Promise<boolean> {
+    if (!this.#send({ type: "state", state, safe_off: safeOff })) return Promise.resolve(false);
     return new Promise((resolve) => {
       const t = setTimeout(() => {
         this.acks.delete(state.seq);
         resolve(false);
       }, 1000);
-      this.acks.set(state.seq, () => {
+      this.acks.set(state.seq, (prepared) => {
         clearTimeout(t);
-        resolve(true);
+        resolve(!safeOff || prepared === safeOff);
       });
     });
   }
@@ -308,7 +309,7 @@ export class LocalChannel {
         this.h.command({ id: String(m.id), op: String(m.op), args: m.args && typeof m.args === "object" ? m.args : {} });
         break;
       case "state_ack":
-        this.acks.get(Number(m.seq))?.();
+        this.acks.get(Number(m.seq))?.(m.safe_off);
         this.acks.delete(Number(m.seq));
         break;
       case "view":

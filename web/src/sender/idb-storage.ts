@@ -71,7 +71,7 @@ export class IndexedDBStorage implements AtomicStorage {
    * Not secure erasure: the browser's storage may keep old copies.
    */
   async deleteStream(streamId: string): Promise<void> {
-    const keys = [`ps:stream:${streamId}`, `ps:seen:${streamId}`, `budget:${streamId}`, `grants:${streamId}`, `revocations:${streamId}`, `epoch:${streamId}`];
+    const keys = [`ps:stream:${streamId}`, `ps:safe-off:${streamId}`, `ps:seen:${streamId}`, `budget:${streamId}`, `grants:${streamId}`, `revocations:${streamId}`, `epoch:${streamId}`];
     const tx = this.db.transaction(STORE, "readwrite", { durability: "strict" });
     for (const k of keys) tx.objectStore(STORE).delete(k);
     await new Promise<void>((resolve, reject) => {

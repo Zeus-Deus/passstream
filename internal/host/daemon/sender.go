@@ -379,6 +379,9 @@ func (d *Daemon) initLocked(st *stream, attach *state.Attachment) map[string]any
 		"latches":           st.rec.Latches,
 		"active_stream_ids": []string{st.rec.StreamID},
 	}
+	if st.rec.SafeOff != "" {
+		init["safe_off"] = st.rec.SafeOff
+	}
 	if attach != nil {
 		init["attachment"] = map[string]any{"key_id": attach.KeyID, "key": attach.Key}
 	}
@@ -455,7 +458,10 @@ func (d *Daemon) pageLoop(st *stream, p *pageConn, kind string) {
 			if len(raw) > maxStateBytes+64 {
 				continue // over the limit: dropped (CONTRACT §1.3)
 			}
-			d.onState(st, p, m["state"])
+			safeOff, _ := m["safe_off"].(string)
+			if safeOff == "" || proto.IsId22(safeOff) {
+				d.onState(st, p, m["state"], safeOff)
+			}
 		case "secrets":
 			d.onSecrets(st, p, m)
 		case "alert":
@@ -556,7 +562,7 @@ func (d *Daemon) pageGone(st *stream, p *pageConn) {
 
 // onState takes a SenderState: newest copy wins, latches are mirrored
 // set-only and fsynced before the state_ack (HOST-CONTROL §5.6).
-func (d *Daemon) onState(st *stream, p *pageConn, raw any) {
+func (d *Daemon) onState(st *stream, p *pageConn, raw any, safeOff string) {
 	var s proto.SenderState
 	if err := proto.IntoValue(raw, proto.SenderStateV, &s); err != nil {
 		return // dropped and counted
@@ -612,17 +618,32 @@ func (d *Daemon) onState(st *stream, p *pageConn, raw any) {
 			dirty = true
 		}
 	}
-	// A legacy report cannot opt the next capture out of protection.
-	if s.Safe != nil && st.rec.Safe != *s.Safe {
-		st.rec.Safe = *s.Safe
-		dirty = true
+	// A pending opt-out is still a protected capture. Only a page that
+	// received our ack and committed its matching receipt can confirm it.
+	previousPreparation := st.rec.SafeOff
+	if s.Safe != nil {
+		switch {
+		case *s.Safe:
+			dirty = dirty || !st.rec.Safe || st.rec.SafeOff != safeOff
+			st.rec.Safe, st.rec.SafeOff = true, safeOff
+		case safeOff != "" && safeOff == st.rec.SafeOff:
+			st.rec.Safe, st.rec.SafeOff = false, ""
+			dirty = true
+		}
 	}
-	// state_ack promises the mirror is durable: no ack while the record
-	// write fails, including a failure left over from an earlier change
-	// (the page stops waiting after 1 s, HOST-CONTROL §5.6).
-	if !(dirty || st.dirty) || d.saveLocked(st) == nil {
-		ack, _ := json.Marshal(map[string]any{"type": "state_ack", "seq": s.Seq})
-		p.send(ack)
+	// No ack before fsync. Leave tightening dirty for retry, but discard a
+	// failed preparation so unrelated writes and reattachments cannot adopt it.
+	saved := !(dirty || st.dirty) || d.saveLocked(st) == nil
+	if !saved && st.rec.SafeOff != previousPreparation {
+		st.rec.SafeOff = ""
+	}
+	if saved && (s.Safe == nil || *s.Safe == st.rec.Safe) {
+		ack := map[string]any{"type": "state_ack", "seq": s.Seq}
+		if safeOff != "" && s.Safe != nil {
+			ack["safe_off"] = safeOff
+		}
+		b, _ := json.Marshal(ack)
+		p.send(b)
 	}
 	d.diffAlertsLocked(prev, &s)
 	d.rejoinLocked(st)

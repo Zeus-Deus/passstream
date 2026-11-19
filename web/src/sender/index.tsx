@@ -67,7 +67,9 @@ const SHELL_COPY: Record<string, string> = {
 };
 
 /** Plain words for a refused command. Unknown codes fall back to the code itself. */
-export function commandError(op: string, code: string): string {
+export function commandError(op: string, code: string, details?: Record<string, unknown>): string {
+  if (op === "safe" && code === "storage" && details?.applied === true)
+    return "Safe mode is on for this capture. PassStream couldn't confirm it will stay on after reload.";
   const what: Record<string, string> = {
     paused: "Start sharing first: there's no picture to use yet.",
     not_live: "This stream isn't live on this machine any more.",
@@ -305,7 +307,7 @@ function SenderWindow({ store, trustedServer }: { store: ShellStore; trustedServ
   const [message, setMessage] = useState("");
   const [picker, setPicker] = useState<{ text: string; error: boolean } | null>(null);
   const act = (op: string, args: Record<string, unknown>) => {
-    void core?.command("window", "", op, args).then((r: Result) => setMessage(r.ok ? "" : commandError(op, r.error.code)));
+    void core?.command("window", "", op, args).then((r: Result) => setMessage(r.ok ? "" : commandError(op, r.error.code, r.error.details)));
   };
   const share = async (test: boolean) => {
     if (!core) return;
@@ -492,6 +494,7 @@ export function mountLocalSender(el: HTMLElement) {
             signalUrl: init.signal_url,
             serverUrl: init.server_url,
             policy: init.policy,
+            preparedSafeOff: init.safe_off,
             latches: init.latches,
             mayCreate: viaLaunch,
             activeStreamIds: init.active_stream_ids,

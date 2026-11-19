@@ -1548,30 +1548,110 @@ try {
     // A nonempty directory blocks the daemon's atomic write while the old record stays readable.
     const blocked = join(base, "blocked-state-write");
     mkdirSync(join(blocked, "hold"), { recursive: true });
-    const withFailedWrite = async (mode) => {
+    const withFailedWrite = async (run) => {
       renameSync(blocked, record + ".tmp");
       try {
-        const result = cli(["safe", mode, "--json"]);
-        return {
-          failed: result.code !== 0 && JSON.parse(result.stderr || "{}").error?.code === "storage",
-          saved: savedSafe(),
-          protected: await protectedCapture(),
-        };
+        return await run();
       } finally {
         renameSync(record + ".tmp", blocked);
       }
     };
-    const on = await withFailedWrite("on");
+    const on = await withFailedWrite(async () => {
+      await page.getByTestId("safe").click();
+      const message = await page.getByTestId("command-error").innerText();
+      return { message, saved: savedSafe(), protected: await protectedCapture() };
+    });
+    // A failed tightening must recover without another owner command.
+    for (let i = 0; i < 100 && !savedSafe(); i++) await sleep(100);
+    const retried = savedSafe();
     const retry = cli(["safe", "on", "--json"]);
     const atReply = savedSafe();
-    await page.reload();
-    await page.getByTestId("test-source").click({ timeout: 15000 });
-    const protectedAfterReload = await protectedCapture();
-    const off = await withFailedWrite("off");
+    const reopen = async () => {
+      await page.reload();
+      await page.getByTestId("test-source").click({ timeout: 15000 });
+      return protectedCapture();
+    };
+    const protectedAfterOn = await reopen();
+    const off = await withFailedWrite(async () => {
+      const result = cli(["safe", "off", "--json"]);
+      return {
+        failed: result.code !== 0 && JSON.parse(result.stderr || "{}").error?.code === "storage",
+        saved: savedSafe(), protected: await protectedCapture(),
+      };
+    });
+    const protectedAfterOff = await reopen();
     return {
-      pass: before === false && on.failed && on.saved === false && on.protected &&
-        retry.code === 0 && atReply === true && protectedAfterReload && off.failed && off.saved === true && off.protected,
-      before, on, atReply, protectedAfterReload, off,
+      pass: before === false && /on for this capture.*after reload/i.test(on.message) && !on.saved && on.protected &&
+        retried && retry.code === 0 && atReply && protectedAfterOn && off.failed && off.saved && off.protected &&
+        protectedAfterOff && savedSafe(),
+      before, on, retried, atReply, protectedAfterOn, off, protectedAfterOff,
+    };
+  });
+
+  await test("safe_mode_opt_out_receipt_survives_sender_reload", async () => {
+    const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+    const record = join(env.XDG_STATE_HOME, "passstream/host-state.json");
+    const saved = () => JSON.parse(readFileSync(record, "utf8"));
+    let loseAck = true;
+    await page.routeWebSocket("**/local/v1/sender", (socket) => {
+      const daemon = socket.connectToServer();
+      let attempt;
+      let prepared = false;
+      socket.onMessage((frame) => {
+        // Freeze the record at preparation: neither a correction after timeout
+        // nor a final off report after success can settle it before reload.
+        const message = JSON.parse(frame);
+        if (message.type === "state") {
+          if (prepared) return;
+          if (message.state.safe && message.safe_off) attempt = message.safe_off;
+        }
+        daemon.send(frame);
+      });
+      daemon.onMessage((frame) => {
+        const message = JSON.parse(frame);
+        if (message.type === "state_ack" && attempt && message.safe_off === attempt) {
+          prepared = true;
+          if (loseAck) return;
+        }
+        socket.send(frame);
+      });
+    });
+    const reopen = async () => {
+      await page.reload();
+      await page.getByTestId("test-source").click({ timeout: 15000 });
+      return page.evaluate(() => {
+        const sender = window.passstreamSender;
+        return { safe: sender.safe, rawEnabled: sender.capture.getVideoTracks()[0].enabled };
+      });
+    };
+    await reopen();
+    const failed = await cliAsync(["safe", "off", "--json"]);
+    const unconfirmed = saved();
+    const afterTimeout = await reopen();
+    loseAck = false;
+    const success = await cliAsync(["safe", "off", "--json"]);
+    const confirmed = saved();
+    const afterSuccess = await reopen();
+    // The previous successful receipt cannot approve another attempt if
+    // IndexedDB rejects its new receipt after the daemon's ack.
+    const on = await cliAsync(["safe", "on", "--json"]);
+    await page.evaluate(() => {
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        if (String(key).startsWith("ps:safe-off:")) throw new DOMException("Full", "QuotaExceededError");
+        return put.apply(this, arguments);
+      };
+    });
+    const refused = await cliAsync(["safe", "off", "--json"]);
+    const afterReceiptFailure = await reopen();
+    return {
+      pass: failed.code !== 0 && JSON.parse(failed.stderr).error?.code === "storage" &&
+        unconfirmed.safe && !!unconfirmed.safe_off && afterTimeout.safe && !afterTimeout.rawEnabled &&
+        success.code === 0 && confirmed.safe && !!confirmed.safe_off && confirmed.safe_off !== unconfirmed.safe_off &&
+        !afterSuccess.safe && afterSuccess.rawEnabled && on.code === 0 &&
+        refused.code !== 0 && JSON.parse(refused.stderr).error?.code === "storage" &&
+        afterReceiptFailure.safe && !afterReceiptFailure.rawEnabled,
+      afterTimeout, afterSuccess, afterReceiptFailure, rejected: failed.code, accepted: success.code,
     };
   });
 

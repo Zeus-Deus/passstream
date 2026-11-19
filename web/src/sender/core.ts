@@ -59,6 +59,7 @@ export interface SenderConfig {
   /** False when the record must already exist (an attachment-key init). */
   mayCreate: boolean;
   activeStreamIds?: string[];
+  preparedSafeOff?: string;
   channel?: LocalChannel;
 }
 
@@ -94,8 +95,8 @@ export class SenderCore {
   mode: "text" | "motion";
   /** Safe mode (FEATURES.md "Safe mode"): redact sensitive data before encoding. On unless turned off locally. */
   safe: boolean;
-  /** A local request to reveal the capture once the daemon has saved that choice. */
-  private pendingSafeOff?: symbol;
+  /** Identifies this opt-out in both the daemon record and the page receipt. */
+  private safeOff?: string;
   /** The redaction engine while safe mode is on and a capture exists. */
   redactor?: Redactor;
   /** Set when safe mode is on but can't run: nothing but the paused picture is sent. */
@@ -214,6 +215,11 @@ export class SenderCore {
     if (this.cfg.activeStreamIds) await this.cleanup(this.cfg.activeStreamIds);
     // Abandoned records (a tab closed without ending its stream) go after a week unseen.
     await this.storage.pruneIdle(this.streamId, ABANDONED_MS).catch(() => undefined);
+    const prepared = this.cfg.preparedSafeOff;
+    if (prepared && prepared === (await this.storage.get(`ps:safe-off:${id}`))) {
+      this.safeOff = prepared;
+      this.safe = false;
+    }
     // A first launch writes the whole record at once: secrets, PIN state, policy.
     const key = `ps:stream:${id}`;
     const existing = await this.storage.get(key);
@@ -753,26 +759,39 @@ export class SenderCore {
   }
 
   private async setSafe(on: boolean): Promise<Result> {
-    // Tighten immediately. A daemon-backed sender keeps redacting until an
-    // explicit local opt-out is durable. A later toggle supersedes that request.
-    const pending = !on && this.cfg.channel ? Symbol() : undefined;
-    this.pendingSafeOff = pending;
-    if (!pending && this.safe !== on) {
+    if (!on && !this.safe) return { ok: true, data: {} };
+    if (!on && this.safeOff) return fail("conflict");
+    const prepare = !on && this.cfg.channel ? id22() : undefined;
+    this.safeOff = prepare;
+    if (!prepare && this.safe !== on) {
       this.safe = on;
       this.redact();
     }
     if (this.cfg.channel) {
-      const acked = await this.reportNow();
-      if (pending && this.pendingSafeOff === pending) {
-        this.pendingSafeOff = undefined;
-        if (acked && this.safe) {
-          this.safe = false;
-          this.redact();
-        } else if (!acked) {
-          this.scheduleState();
+      let saved = await this.reportNow();
+      if (this.safeOff !== prepare) return fail("conflict");
+      if (prepare && saved) {
+        // Both stores must agree before a reload may reveal the capture. A
+        // lost or late daemon ack leaves no matching receipt in IndexedDB.
+        try {
+          const receipt = await this.storage.update(`ps:safe-off:${this.streamId}`, (prev) =>
+            this.safeOff === prepare ? prepare : prev ?? null,
+          );
+          if (receipt !== prepare) return fail("conflict");
+        } catch {
+          saved = false;
         }
       }
-      if (!acked) return fail("storage", "The daemon did not confirm that it saved the safe mode setting.", { applied: this.safe === on });
+      if (!saved) {
+        if (this.safeOff === prepare) this.safeOff = undefined;
+        this.scheduleState();
+        return fail("storage", "The safe mode setting could not be confirmed for reload.", { applied: this.safe === on });
+      }
+      // A later safe-on may have overtaken a committed receipt.
+      if (prepare && this.safeOff === prepare) {
+        this.safe = false;
+        this.redact();
+      }
     }
     return { ok: true, data: {} };
   }
@@ -914,9 +933,7 @@ export class SenderCore {
     this.lastStateAt = Date.now();
     const s = this.state();
     this.session?.sendSignal({ type: "sender.state", state: s });
-    // Viewers see the effective mode. Only the daemon mirrors a pending opt-out.
-    const mirror = this.pendingSafeOff ? { ...s, safe: false } : s;
-    return this.cfg.channel?.sendState(mirror) ?? false;
+    return this.cfg.channel?.sendState(s, this.safeOff) ?? false;
   }
 
   sendSecrets() {

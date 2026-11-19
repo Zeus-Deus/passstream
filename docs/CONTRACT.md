@@ -784,7 +784,7 @@ Loosening commands (`resume`, unlock via `lock {locked:false}`, `unfreeze`, `pin
 | `start` | `{pin_policy?: PinPolicy, pin?: string, knock?: bool = false, label?: string \| null = null, mode?: "text" \| "motion" = "text", safe?: bool = true}` | `{stream_id}`. `pin_policy` present means an explicit choice. `pin` is allowed only with `pin_policy` (and required for `passphrase`). `safe: false` starts with safe mode off. |
 | `stop`, `pause`, `resume` | `{}` | `{}` |
 | `mode` | `{mode}` | `{}` |
-| `safe` | `{on: bool}` | `{}`. Safe mode on or off. Off is local only: the server can't send it (§8.5). The daemon mirrors explicit `SenderState.safe` values. The sender waits for the durable state acknowledgement before returning success. |
+| `safe` | `{on: bool}` | `{}`. Safe mode on or off. Off is local only: the server can't send it (§8.5). Protection applies immediately and the daemon retries failed writes. A local opt-out needs both a durable daemon preparation and a matching page receipt (§11). |
 | `lock` | `{locked: bool}` | `{}` |
 | `unfreeze` | `{keep_pin?: bool = false, pin?: string, action_id?: string}` | `{}`. Without `keep_pin` it rotates (sender-generated unless `pin`). |
 | `kick` | `{admission_id: Id22, lock?: bool = false, rotate_pin?: bool = false, pin?: string, action_id?: string}` | `{admission_ids, locked: bool}`. `pin` only with `rotate_pin`. |
@@ -1008,8 +1008,8 @@ The daemon checks the full-tuple peer uid (where available), `Host: 127.0.0.1:47
 | daemon → page | `{"type":"artifact_ack","ack":string,"ok":bool}`. Acknowledge each PNG/chunk; one of each in flight. A rejected PNG does not advance the sender diff baseline. |
 | page → daemon | `{"type":"owner_action","id":string,"op":string,"args":object}`. The §10.1 ops except `capture.auth`; an explicit click in the local sender. |
 | daemon → page | `{"type":"owner_result","id":string,"ok":bool,"data":object,"error"?:Error}`. Never routed to the server. |
-| page → daemon | `{"type": "state", "state": SenderState}` |
-| daemon → page | `{"type": "state_ack", "seq": uint}`, after the daemon has fsynced the latches of the `state` with that `seq` (HOST-CONTROL §5.6) |
+| page → daemon | `{"type": "state", "state": SenderState, "safe_off"?: Id22}`. The optional local opt-out ID is outside the state sent to the server. |
+| daemon → page | `{"type": "state_ack", "seq": uint, "safe_off"?: Id22}`, echoing the accepted opt-out ID if present, after the daemon has fsynced the latches of the `state` with that `seq` (HOST-CONTROL §5.6) |
 | page → daemon | `{"type": "latch_cleared", "latch": "locked" \| "paused" \| "frozen"}`, after the sender window's own UI cleared a latch and the page record has it |
 | page → daemon | `{"type": "secrets", "pin": string \| null, "pending_pin": string \| null, "link": string}`. After every authentication and on every change. **Only on this socket.** |
 | page → daemon | `{"type": "alert", "alert": Alert}` |
@@ -1023,6 +1023,7 @@ A message out of order (anything but `hello` first, anything but `auth` after `c
 Init {
   type: "init"
   attachment?: { key_id: Id22, key: Token43 }   // only after a launch-key exchange; the same value every time
+  safe_off?: Id22                       // prepared opt-out, requires matching IndexedDB receipt
   server_url: string
   signal_url: string                    // wss://…/signal, derived from server_url
   stream: { id: StreamId, publish_token: Token43, view_link_base: string }
@@ -1031,6 +1032,8 @@ Init {
   active_stream_ids: StreamId[]
 }
 ```
+
+A local opt-out sends a fresh `safe_off` ID with the still-protected state. The daemon fsyncs the ID with `policy.safe` true and echoes it with the corresponding sequence. Only after receiving that ack does the page commit the ID in IndexedDB for this stream and turn protection off. On reload a prepared ID only takes effect with a matching page receipt. A subsequent effective `safe:false` report with the same ID lets the daemon finish the transition to `policy.safe:false`. A tightening report clears the preparation. Missing `SenderState.safe` preserves recovery policy.
 
 ### 11.2 Rules
 

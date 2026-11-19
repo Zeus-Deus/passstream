@@ -531,7 +531,7 @@ func TestLegacySenderStateKeepsSafePreference(t *testing.T) {
 	e, c, origin, lid, lkey := launched(t)
 	s, _, _ := attachedPage(t, c, origin, lid, lkey)
 	id, inst := e.record().StreamID, proto.NewId22()
-	for i, safe := range []*bool{new(true), nil, new(false)} {
+	for i, safe := range []*bool{new(true), nil} {
 		msg := senderState(id, inst, i+1, proto.Latches{Locked: true}, func(st *proto.SenderState) { st.Safe = safe })
 		if err := hosttest.WriteMsg(ctx5(), s.WS, msg); err != nil {
 			t.Fatal(err)
@@ -541,8 +541,62 @@ func TestLegacySenderStateKeepsSafePreference(t *testing.T) {
 		if !got.Access.Latches.Locked || got.Safe != (safe != nil && *safe) {
 			t.Fatalf("unexpected status after report %d: %+v", i+1, got)
 		}
-		if e.record().Safe != (safe == nil || *safe) {
+		if !e.record().Safe {
 			t.Fatalf("unexpected saved safe mode after report %d", i+1)
 		}
+	}
+}
+
+func TestSafeOffRecoveryRequiresConfirmation(t *testing.T) {
+	for _, failure := range []string{"failed write", "lost ack"} {
+		t.Run(failure, func(t *testing.T) {
+			failedWrite := failure == "failed write"
+			e, c, origin, lid, lkey := launched(t)
+			s, aid, akey := attachedPage(t, c, origin, lid, lkey)
+			msgs := pageMsgs(s.WS)
+			id, inst, attempt := e.record().StreamID, proto.NewId22(), proto.NewId22()
+			msg := senderState(id, inst, 1, proto.Latches{Locked: true}, func(st *proto.SenderState) { st.Safe = new(true) })
+			msg["safe_off"] = attempt
+			var restore func()
+			if failedWrite {
+				restore = e.breakState()
+			}
+			if err := hosttest.WriteMsg(ctx5(), s.WS, msg); err != nil {
+				t.Fatal(err)
+			}
+			if failedWrite {
+				if ack := next(msgs, "state_ack", 150*time.Millisecond); ack != nil {
+					t.Fatalf("acked a failed preparation: %v", ack)
+				}
+				restore()
+			} else if ack := next(msgs, "state_ack", 3*time.Second); ack == nil || ack["safe_off"] != attempt {
+				t.Fatalf("missing prepared opt-out ack: %v", ack)
+			}
+			// The page never confirms. Reattach without any corrective report.
+			reopened, err := hosttest.Authenticate(ctx5(), origin, aid, akey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.WS.CloseNow()
+			r := e.record()
+			if !r.Safe || !r.Latches.Locked || hosttest.Field(reopened.Init, "policy", "safe") != true {
+				t.Fatal("reattachment lost protection or failed to retry the tightening latch")
+			}
+			wantPreparation := attempt
+			if failedWrite {
+				wantPreparation = ""
+			}
+			if r.SafeOff != wantPreparation {
+				t.Fatalf("unexpected prepared opt-out after reattachment: %q", r.SafeOff)
+			}
+			// A bare false from an older page cannot complete the preparation.
+			bare := senderState(id, proto.NewId22(), 1, proto.Latches{}, func(st *proto.SenderState) { st.Safe = new(false) })
+			if err := hosttest.WriteMsg(ctx5(), reopened.WS, bare); err != nil {
+				t.Fatal(err)
+			}
+			if ack := next(pageMsgs(reopened.WS), "state_ack", 150*time.Millisecond); ack != nil || !e.record().Safe {
+				t.Fatal("an unconfirmed report disabled protection")
+			}
+		})
 	}
 }
