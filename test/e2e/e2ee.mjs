@@ -1655,6 +1655,105 @@ try {
     };
   });
 
+  for (const scenario of ["tighten", "failed_daemon_save", "new_opt_out"]) {
+    await test(`safe_mode_pending_receipt_${scenario}`, async () => {
+      const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+      const record = join(env.XDG_STATE_HOME, "passstream/host-state.json");
+      const saved = () => JSON.parse(readFileSync(record, "utf8"));
+      const failedSave = scenario === "failed_daemon_save";
+      const replace = scenario === "new_opt_out";
+
+      const first = page.evaluate(() => {
+        const sender = window.passstreamSender;
+        const key = `ps:safe-off:${sender.streamId}`;
+        const put = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (value, target) {
+          const request = put.apply(this, arguments);
+          if (target === key) {
+            IDBObjectStore.prototype.put = put;
+            // Keep the actual transaction alive after the receipt put is queued.
+            let held = true;
+            const keepAlive = () => {
+              if (held) this.get(key).onsuccess = keepAlive;
+            };
+            keepAlive();
+            window.releaseReceipt = (abort) => {
+              held = false;
+              if (abort) this.transaction.abort();
+            };
+            const db = this.transaction.db;
+            window.readReceipt = () => new Promise((resolve, reject) => {
+              const read = db.transaction("kv").objectStore("kv").get(key);
+              read.onsuccess = () => resolve(JSON.parse(read.result ?? "null"));
+              read.onerror = () => reject(read.error);
+            });
+          }
+          return request;
+        };
+        return sender.command("window", "", "safe", { on: false });
+      });
+      await page.waitForFunction(() => !!window.releaseReceipt);
+      const prepared = saved();
+      // Preserve the prepared record across a real daemon write failure and restart.
+      if (failedSave) mkdirSync(join(record + ".tmp", "hold"), { recursive: true });
+      const senderURL = page.url();
+      let race, disk;
+      try {
+        race = await page.evaluate(async (replace) => {
+          const sender = window.passstreamSender;
+          let releaseAck;
+          if (replace) {
+            // Deliver the tightening ack only after the next opt-out commits.
+            const hold = new Promise((resolve) => { releaseAck = resolve; });
+            const report = sender.reportNow.bind(sender);
+            sender.reportNow = async () => {
+              sender.reportNow = report;
+              const saved = await report();
+              await hold;
+              return saved;
+            };
+          }
+          const on = sender.command("window", "", "safe", { on: true });
+          const protectedNow = sender.safe && !sender.capture.getVideoTracks()[0].enabled;
+          const pending = replace && sender.command("window", "", "safe", { on: false });
+          window.releaseReceipt(replace);
+          const next = await pending;
+          releaseAck?.();
+          return { protectedNow, on: await on, next, receipt: await window.readReceipt() };
+        }, replace);
+        disk = saved();
+        if (failedSave) {
+          await killDaemon();
+          await page.goto("about:blank");
+        }
+      } finally {
+        if (failedSave) renameSync(record + ".tmp", join(base, "blocked-receipt-race-write"));
+      }
+      const off = await first;
+      if (failedSave) {
+        await startDaemon();
+        await page.goto(senderURL);
+      } else {
+        await page.reload();
+      }
+      await page.getByTestId("test-source").click({ timeout: 15000 });
+      const reload = await page.evaluate(() => ({
+        safe: window.passstreamSender.safe,
+        rawEnabled: window.passstreamSender.capture.getVideoTracks()[0].enabled,
+      }));
+      const onResult = failedSave ? race.on.error?.code === "storage" && race.on.error.details?.applied === true
+        : replace ? race.on.error?.code === "conflict" : race.on.ok;
+      const stored = replace ? race.next.ok && !!race.receipt && race.receipt !== prepared.safe_off &&
+        (disk.safe ? disk.safe_off === race.receipt : !disk.safe_off)
+        : !race.receipt && disk.safe && (failedSave ? disk.safe_off === prepared.safe_off : !disk.safe_off);
+      return {
+        pass: prepared.safe && !!prepared.safe_off && off.error?.code === "conflict" && race.protectedNow &&
+          onResult && stored && reload.safe === !replace && reload.rawEnabled === replace,
+        off, on: race.on, next: race.next, protectedNow: race.protectedNow, stored, reload,
+      };
+    });
+  }
+
   await test("safe_mode_hides_card_from_viewers", async () => {
     // web/src/source.ts sensitiveSource(): the card's digits and a plain line (1280×720 px).
     const CARD = { x: 360, y: 206, w: 330, h: 30 }, PLAIN = { x: 64, y: 306, w: 400, h: 30 };

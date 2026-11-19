@@ -768,27 +768,32 @@ export class SenderCore {
       this.redact();
     }
     if (this.cfg.channel) {
-      let saved = await this.reportNow();
+      const key = `ps:safe-off:${this.streamId}`;
+      // Queue revocation before yielding. IndexedDB runs it after any pending
+      // receipt write and before a later opt-out can write its own receipt.
+      // A daemon ack independently confirms tightening if IndexedDB fails.
+      const revoke = on ? this.storage.update(key, () => null).catch(() => null) : undefined;
+      let [saved] = await Promise.all([this.reportNow(), revoke]);
       if (this.safeOff !== prepare) return fail("conflict");
       if (prepare && saved) {
         // Both stores must agree before a reload may reveal the capture. A
         // lost or late daemon ack leaves no matching receipt in IndexedDB.
         try {
-          const receipt = await this.storage.update(`ps:safe-off:${this.streamId}`, (prev) =>
+          const receipt = await this.storage.update(key, (prev) =>
             this.safeOff === prepare ? prepare : prev ?? null,
           );
           if (receipt !== prepare) return fail("conflict");
         } catch {
           saved = false;
         }
+        if (this.safeOff !== prepare) return fail("conflict");
       }
       if (!saved) {
-        if (this.safeOff === prepare) this.safeOff = undefined;
+        this.safeOff = undefined;
         this.scheduleState();
         return fail("storage", "The safe mode setting could not be confirmed for reload.", { applied: this.safe === on });
       }
-      // A later safe-on may have overtaken a committed receipt.
-      if (prepare && this.safeOff === prepare) {
+      if (prepare) {
         this.safe = false;
         this.redact();
       }

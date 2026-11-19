@@ -1062,7 +1062,7 @@ Init {
 }
 ```
 
-A local opt-out sends a fresh `safe_off` ID with the still-protected state. The daemon fsyncs the ID with `policy.safe` true and echoes it with the corresponding sequence. Only after receiving that ack does the page commit the ID in IndexedDB for this stream and turn protection off. On reload a prepared ID only takes effect with a matching page receipt. A subsequent effective `safe:false` report with the same ID lets the daemon finish the transition to `policy.safe:false`. A tightening report clears the preparation. Missing `SenderState.safe` preserves recovery policy.
+A local opt-out sends a fresh `safe_off` ID with the still-protected state. The daemon fsyncs the ID with `policy.safe` true and echoes it with the corresponding sequence. Only after receiving that ack does the page commit the ID in IndexedDB for this stream and turn protection off. On reload a prepared ID only takes effect with a matching page receipt. A subsequent effective `safe:false` report with the same ID lets the daemon finish the transition to `policy.safe:false`. Tightening revokes the page receipt even if the daemon cannot save its report. An opt-out overtaken before it applies returns `conflict`. The daemon clears its preparation when it saves the tightening report. Missing `SenderState.safe` preserves recovery policy.
 
 ### 11.2 Rules
 
