@@ -303,7 +303,8 @@ async function viewer(v, timeout = 30000) {
   try {
     if (v.pin) {
       await p.getByTestId("pin-screen").waitFor({ timeout });
-      await p.locator("input").first().fill(v.pin);
+      await p.getByTestId("pin-input").fill(v.pin);
+      await p.getByRole("button", { name: "Join" }).click({ timeout });
     }
     await p.waitForFunction(() => window.passstream?.firstFrame > 0, null, {
       timeout,

@@ -38,19 +38,24 @@ for (const [state, ready] of STATES) {
   });
 }
 
-test("PIN entry auto-submits on the last digit and clears on failure", async ({ page }) => {
+test("PIN entry waits for Join and clears on failure", async ({ page }) => {
   await page.goto(`${DEV}/dev/viewer-ui?state=pin`);
   const input = page.getByTestId("pin-input");
   await input.focus();
   await page.keyboard.type("482");
-  await expect(page.getByRole("button", { name: "Join" })).toBeDisabled();
+  const join = page.getByRole("button", { name: "Join" });
+  await expect(join).toBeDisabled();
   await page.keyboard.type("1");
+  await expect(join).toBeEnabled();
+  await page.getByTestId("name-input").fill("Ana");
+  await join.click();
   await expect(page.getByRole("button", { name: "Checking…" })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveText("That PIN didn't match.");
   await expect(input).toHaveValue("");
   // Paste with separators.
   await page.evaluate(() => navigator.clipboard?.writeText?.("12 34").catch(() => undefined));
   await input.fill("12 34");
+  await input.press("Enter");
   await expect(page.getByRole("button", { name: "Checking…" })).toBeVisible();
 });
 

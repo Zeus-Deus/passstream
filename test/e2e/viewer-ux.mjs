@@ -123,6 +123,7 @@ async function typePin(p, pin) {
   await input.waitFor({ state: "visible" });
   await input.tap();
   await p.keyboard.type(pin, { delay: 30 });
+  await p.getByRole("button", { name: "Join" }).click();
 }
 const screens = (p) => p.evaluate(() => window.__screens.map((s) => s.k));
 const screenNow = (p) => p.evaluate(() => window.__screens.at(-1)?.k ?? null);
@@ -211,6 +212,7 @@ try {
     await input.tap();
     await v.keyboard.type(s.pin.slice(0, 3), { delay: 30 });
     await v.keyboard.type(s.pin.slice(3));
+    await v.getByRole("button", { name: "Join" }).click();
     await until(v, "live");
     await v.getByTestId("live-badge").waitFor();
     await shot(v, "live");
@@ -469,8 +471,9 @@ try {
     const s = await share(["--pin", "4", "--knock"]);
     const v = await viewer(s.link);
     await until(v, "pin:entry");
+    await v.getByTestId("pin-input").fill(s.pin);
     await v.getByTestId("name-input").fill("Review name");
-    await typePin(v, s.pin);
+    await v.getByRole("button", { name: "Join" }).click();
     await until(v, "knock");
     // The first knocking row the host sees already carries the name.
     // (The knock row's connections are attached once the server reports them; wait for that.)

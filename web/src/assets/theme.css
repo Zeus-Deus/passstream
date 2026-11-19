@@ -121,11 +121,14 @@
   .btn {
     @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-ink px-3.5 py-2 text-sm font-semibold text-ink transition-[background,transform] select-none hover:bg-paper-deep active:translate-y-px disabled:border-paper-dark disabled:text-ink-faint disabled:hover:bg-transparent;
   }
+  /* Filled buttons keep their fill when disabled and hovered: .btn's
+     transparent disabled hover would leave the label with nothing behind
+     it. The muted label stays readable on that fill (3.2:1). */
   .btn-primary {
-    @apply bg-ink text-paper hover:bg-ink-soft disabled:bg-paper-dark disabled:text-paper;
+    @apply bg-ink text-paper hover:bg-ink-soft disabled:bg-paper-dark disabled:text-ink-mute disabled:hover:bg-paper-dark;
   }
   .btn-stamp {
-    @apply border-stamp bg-stamp text-paper hover:bg-stamp-deep;
+    @apply border-stamp bg-stamp text-paper hover:bg-stamp-deep disabled:border-paper-dark disabled:bg-paper-dark disabled:text-ink-mute disabled:hover:bg-paper-dark;
   }
   .btn-quiet {
     @apply inline-flex min-h-9 items-center gap-1.5 rounded-sm px-2 py-1 text-[0.82rem] font-medium text-ink-soft hover:bg-paper-deep hover:text-ink disabled:text-ink-faint disabled:hover:bg-transparent;

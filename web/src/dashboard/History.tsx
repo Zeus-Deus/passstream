@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError } from "./api";
 import { dateTime, durationShort, place } from "./format";
 import { href, Link, navigate } from "./router";
+import { mergeStreams } from "./Streams";
 import type { AuditEntry, HistoryEntry, Stream } from "./types";
 import { Badge, Empty, Loading, Notice, PageHead, RowCodeChip } from "./ui";
 
@@ -140,38 +141,76 @@ function AuditList({ stream }: { stream: string | null }) {
 }
 
 export function History({ stream }: { stream: string | null }) {
-  const [streams, setStreams] = useState<Stream[]>([]);
+  const [streams, setStreams] = useState<Stream[] | null>(null);
+  const [page, setPage] = useState<{ cursor: string | null; loading: boolean }>({ cursor: null, loading: true });
+  const [listError, setListError] = useState<string | null>(null);
   useEffect(() => {
-    api.streams("all").then((r) => setStreams(r.streams), () => undefined);
-  }, []);
+    if (!page.loading) return;
+    let active = true;
+    api.streams("all", page.cursor).then(
+      (r) => {
+        if (!active) return;
+        setStreams((prev) => mergeStreams(prev, r.streams));
+        setPage({ cursor: r.next_cursor, loading: false });
+        setListError(null);
+      },
+      (e: ApiError) => {
+        if (!active) return;
+        setPage({ ...page, loading: false });
+        setListError(e.message);
+      },
+    );
+    return () => { active = false; };
+  }, [page]);
+
+  const missing = stream && !streams?.some((s) => s.id === stream) ? stream : null;
+  const lookup = streams ? missing : null;
+  useEffect(() => {
+    if (!lookup) return;
+    let active = true;
+    api.stream(lookup).then(
+      (s) => { if (active) setStreams((prev) => mergeStreams(prev, [s])); },
+      () => undefined, // An unavailable stream still has a truthful option using its ID.
+    );
+    return () => { active = false; };
+  }, [lookup]);
   return (
     <>
       <PageHead kicker="History & audit" title="What happened, and who did it.">
         Viewers who left, ended knocks, and every command, sign-in and settings change the server saw.
       </PageHead>
       <label className="label mb-2 block" htmlFor="hist-stream">Stream</label>
-      <select
-        id="hist-stream"
-        className="field mb-8 max-w-md"
-        value={stream ?? ""}
-        onChange={(e) => navigate(href({ name: "history", stream: e.target.value || null }))}
-      >
-        <option value="">All streams (audit only)</option>
-        {streams.map((s) => (
-          <option key={s.id} value={s.id}>
-            {(s.label || `Stream ${s.id.slice(0, 6)}`) + ` · ${dateTime(s.created_at)}`}
-          </option>
-        ))}
-      </select>
+      <div className="mb-8 flex flex-wrap items-center gap-2">
+        <select
+          id="hist-stream"
+          className="field max-w-md"
+          value={stream ?? ""}
+          onChange={(e) => navigate(href({ name: "history", stream: e.target.value || null }))}
+        >
+          <option value="">All streams (audit only)</option>
+          {missing && <option value={missing}>Stream {missing}</option>}
+          {streams?.map((s) => (
+            <option key={s.id} value={s.id}>
+              {(s.label || `Stream ${s.id.slice(0, 6)}`) + ` · ${dateTime(s.created_at)}`}
+            </option>
+          ))}
+        </select>
+        {(page.cursor || listError) && (
+          <button type="button" className="btn" disabled={page.loading} onClick={() => setPage({ ...page, loading: true })}>
+            {listError ? "Retry loading streams" : "Older streams"}
+          </button>
+        )}
+        {listError && <Notice tone="stamp" role="alert">{listError}</Notice>}
+      </div>
       {stream && (
         <section className="mb-10" aria-labelledby="h-viewers">
           <h2 id="h-viewers" className="label mb-3">Viewer history</h2>
-          <HistoryList stream={stream} />
+          <HistoryList key={stream} stream={stream} />
         </section>
       )}
       <section aria-labelledby="h-audit">
         <h2 id="h-audit" className="label mb-3">Audit log</h2>
-        <AuditList stream={stream} />
+        <AuditList key={stream ?? ""} stream={stream} />
       </section>
     </>
   );

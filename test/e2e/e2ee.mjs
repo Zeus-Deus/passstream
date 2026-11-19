@@ -151,7 +151,8 @@ async function viewer(link, { pin = null, ctx = null, expectPin = true, timeout 
   await p.goto(link);
   if (pin !== null) {
     await p.getByTestId("pin-screen").waitFor({ timeout });
-    await p.locator("input").first().fill(pin);
+    await p.getByTestId("pin-input").fill(pin);
+    await p.getByRole("button", { name: "Join" }).click();
   }
   return p;
 }
@@ -728,6 +729,8 @@ try {
     secrets.push({ pin: s.pin, link: s.link });
     for (let i = 0; i < 60 && cli(["frame", "--json"]).json?.status !== "frame"; i++) await sleep(100);
     const before = uploadRequests.length;
+    // Recording and publishing are folded away until asked for.
+    await s.page.getByText("Record and publish", { exact: true }).click();
     const controls = s.page.getByRole("region", { name: "Owner captures" });
     await controls.getByRole("button", { name: "Snapshot → PassFile", exact: true }).click();
     await s.page.getByRole("dialog",{name:"Confirm publishing"}).getByRole("button",{name:"Confirm upload",exact:true}).click();
@@ -1062,7 +1065,9 @@ try {
         // Wait out the signed wait (the session's backoff or the stream's pacing), then retype.
         if (st.locked) await v.waitForFunction(() => Date.now() >= (window.passstreamViewer.lockedUntil ?? 0) + 50, null, { timeout: 70000, polling: 250 });
         await v.getByTestId("pin-screen").waitFor();
-        await v.locator("input").first().fill(wrong);
+        const input = v.getByTestId("pin-input");
+        await input.fill(wrong);
+        await v.getByRole("button", { name: "Join" }).click();
       }
       await ctx.close();
       if (tries.at(-1)?.last === "frozen") break;
@@ -1169,7 +1174,8 @@ try {
     // The kicked person reloads and tries the old PIN.
     await a.reload();
     await a.getByTestId("pin-screen").waitFor({ timeout: 10000 });
-    await a.locator("input").first().fill(s.pin);
+    await a.getByTestId("pin-input").fill(s.pin);
+    await a.getByRole("button", { name: "Join" }).click();
     await a.waitForFunction(() => window.passstreamViewer.events.some((e) => e.kind === "refused"), null, { timeout: 10000 }).catch(async error => {
       throw Error(`old PIN did not reach refusal: ${JSON.stringify(await diag(a, s.page))}`, { cause: error });
     });
@@ -1200,6 +1206,7 @@ try {
       };
     });
     await a.getByTestId("pin-input").fill(s.pin);
+    await a.getByRole("button", { name: "Join" }).click();
     await a.waitForFunction(() => window.__offlineHello.hellos() === 1 && window.passstreamViewer.adm?.state === "hello_sent", null, { timeout: 10000 });
     await a.evaluate(() => window.passstreamViewer.onSignal({ type: "e2ee.sender_away" }));
     await sleep(6000);
@@ -1260,6 +1267,7 @@ try {
       c.onSignal({ type: "e2ee.sender_back", instance: c.senderInstance });
     });
     await a.getByTestId("pin-input").fill(s.pin);
+    await a.getByRole("button", { name: "Join" }).click();
     let oldExit = null;
     if (approving) {
       await a.waitForFunction(() => window.__heldKnockResponse.count() === 1 && window.passstreamViewer.adm?.state === "response_sent", null, { timeout: 10000 });
@@ -1344,6 +1352,7 @@ try {
       }));
       const recoveryMs = Date.now() - started;
       await a.getByTestId("pin-input").fill(s.pin);
+      await a.getByRole("button", { name: "Join" }).click();
       await a.waitForFunction(() => window.passstreamViewer.events.some(e => e.kind === "refused" && e.detail === "wrong_pin"), null, { timeout: 10000 });
       const fresh = await viewer(s.link, { pin: newPin });
       await firstFrame(fresh);

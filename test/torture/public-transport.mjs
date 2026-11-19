@@ -121,7 +121,8 @@ try {
       viewer.on("pageerror", e => errors.push(redactText(e)));
       await viewer.goto(link);
       await viewer.getByTestId("pin-screen").waitFor({ timeout: 60000 });
-      await viewer.locator("input").first().fill(pin);
+      await viewer.getByTestId("pin-input").fill(pin);
+      await viewer.getByRole("button", { name: "Join" }).click();
       await viewer.waitForFunction(() => window.passstream?.firstFrame > 0, null, { timeout: 60000 });
       await viewer.waitForFunction(() => window.passstream?.frameTimeline.length >= 10, null, { timeout: 30000 });
       await sleep(3000);

@@ -67,8 +67,8 @@ function countdown(ms: number) {
 
 /**
  * The join screen. Digits use one real input (so iOS/Android one-time-code
- * autofill and paste work) drawn as N boxes; it submits itself on the last
- * digit. The PIN is checked by the host's machine, never by the server.
+ * autofill and paste work) drawn as N boxes. Viewers can fill in their name
+ * before submitting. The PIN is checked by the host's machine, never by the server.
  */
 export function PinScreen({
   policy,
@@ -138,7 +138,6 @@ export function PinScreen({
     const v = raw.replace(/\D/g, "").slice(0, length);
     setValue(v);
     if (v !== submitted.current) submitted.current = null;
-    if (v.length === length) submit(v);
   };
 
   const onForm = (e: FormEvent) => {

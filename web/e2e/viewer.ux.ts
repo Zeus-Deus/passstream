@@ -182,7 +182,7 @@ test("the real /v route explains an incomplete link", async ({ page }, info) => 
   await shot(page, info, "real-invalid");
 });
 
-test("PIN: numeric keypad, auto-submit on the last digit, clears on failure, paste with separators", async ({ page }, info) => {
+test("PIN: numeric keypad, explicit Join, clears on failure, paste with separators", async ({ page }, info) => {
   await page.goto(`${DEV}/dev/viewer-ui?state=pin`);
   const input = page.getByTestId("pin-input");
   await expect(input).toHaveAttribute("inputmode", "numeric");
@@ -195,14 +195,19 @@ test("PIN: numeric keypad, auto-submit on the last digit, clears on failure, pas
   else await input.click();
   await expect(input).toBeFocused();
   await page.keyboard.type("482");
-  await expect(page.getByRole("button", { name: "Join" })).toBeDisabled();
+  const join = page.getByRole("button", { name: "Join" });
+  await expect(join).toBeDisabled();
   await page.keyboard.type("1");
+  await expect(join).toBeEnabled();
+  await page.getByTestId("name-input").fill("Ana");
+  await join.click();
   await expect(page.getByRole("button", { name: "Checking…" })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveText("That PIN didn't match.");
   await expect(input).toHaveValue("");
   await expect(input).toBeFocused();
   await input.fill("PIN: 12-34");
   await expect(input).toHaveValue("1234");
+  await input.press("Enter");
   await expect(page.getByRole("button", { name: "Checking…" })).toBeVisible();
 });
 

@@ -30,7 +30,7 @@ function hudSampler(c: ViewerController, layers: MediaLayerSource = new SessionL
     });
     freezes.observe(s.frameTimeline);
     const h = viewerHud({ sample: q, layer: layers.layer(), freezes: freezes.freezes, renderGaps: freezes.renderGaps, g2g: latestG2G(s.frameTimeline, Date.now()), e2ee: e2eeHud(c.epoch, c.drops) });
-    return { ...h, layer: q.layer };
+    return { ...h, layer: q.layer, at: q.timestamp };
   });
 }
 

@@ -288,6 +288,7 @@ async function viewer(link, pin, size = [390, 844], { via = browser, low = false
   const input = p.getByTestId("pin-input");
   await input.tap();
   await p.keyboard.type(pin, { delay: 20 });
+  await p.getByRole("button", { name: "Join" }).click();
   await p.waitForFunction(() => window.__screens.at(-1)?.k === "live", null, { timeout: 20000, polling: 50 });
   return p;
 }

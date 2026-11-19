@@ -44,6 +44,59 @@ class ShellStore {
   }
 }
 
+/** What the header shows for each phase; `data-phase` keeps the raw value. */
+export const PHASE_COPY: Record<string, { label: string; tone: "idle" | "live" | "warn" | "off" }> = {
+  connecting: { label: "Connecting", tone: "idle" },
+  ready: { label: "Connecting", tone: "idle" },
+  starting: { label: "Starting", tone: "idle" },
+  picking: { label: "Not sharing yet", tone: "idle" },
+  live: { label: "Live", tone: "live" },
+  paused: { label: "Paused", tone: "warn" },
+  ended: { label: "Ended", tone: "off" },
+  superseded: { label: "Moved", tone: "off" },
+  closed: { label: "Closed", tone: "off" },
+  error: { label: "Error", tone: "warn" },
+};
+
+const SHELL_COPY: Record<string, string> = {
+  connecting: "Connecting to PassStream on this machine…",
+  ready: "Starting the stream…",
+  superseded: "Another window is the sender now. You can close this one.",
+  closed: "This window isn't connected to a stream. Start one with passstream share.",
+  error: "The sender couldn't start.",
+};
+
+/** Plain words for a refused command. Unknown codes fall back to the code itself. */
+export function commandError(op: string, code: string): string {
+  const what: Record<string, string> = {
+    paused: "Start sharing first: there's no picture to use yet.",
+    not_live: "This stream isn't live on this machine any more.",
+    conflict: "That's already in progress.",
+    not_found: "There's nothing to stop or publish yet.",
+    not_supported: "This browser can't do that.",
+    rate_limited: "Too many requests. Wait a moment and try again.",
+    rotation_pending: "A PIN change is still finishing. Try again in a moment.",
+    sender_offline: "This window lost its connection to PassStream on this machine.",
+    sender_timeout: "That took too long and was given up.",
+    upload_failed: "The upload failed. Check the Pass service, then try again.",
+    recording_too_large: "The recording got too large and was dropped.",
+    recording_failed: "The recording failed.",
+    local_owner_required: "That needs to be done from this machine.",
+    unknown_admission: "That viewer already left.",
+    unknown_knock: "That request already ended.",
+    storage: "Couldn't save the change on this machine, so it wasn't applied.",
+  };
+  return what[code] ?? `Couldn't ${op.replace(/[._]/g, " ")} (${code}).`;
+}
+
+/** A cancelled picker is a normal choice, not a failure. */
+export function shareError(e: unknown): { text: string; error: boolean } {
+  const name = e instanceof DOMException || e instanceof Error ? e.name : "";
+  if (name === "NotAllowedError" || name === "AbortError") return { text: "Nothing was picked, so nothing is being shared.", error: false };
+  if (name === "NotFoundError" || name === "NotReadableError") return { text: "The browser couldn't capture that. Pick another screen, window or tab.", error: true };
+  return { text: `Screen sharing didn't start (${e instanceof Error ? e.message : String(e)}).`, error: true };
+}
+
 function Code({ code }: { code: string }) {
   const colour = rowCodeColour(code);
   return (
@@ -157,6 +210,7 @@ function Viewers({ core, act }: { core: SenderCore; act: (op: string, args: Reco
       <h2 className="text-[0.8rem] tracking-[0.12em] text-ink-mute uppercase" data-testid="watching">
         Watching · {watching}
       </h2>
+      {rows.size === 0 && <p className="text-[0.88rem] text-ink-mute">Nobody yet. Viewers appear here once they enter the PIN.</p>}
       {[...rows.entries()].map(([vid, adms]) => {
         const newest = [...adms].sort((a, b) => b.admittedAt - a.admittedAt)[0];
         return (
@@ -180,16 +234,82 @@ function Viewers({ core, act }: { core: SenderCore; act: (op: string, args: Reco
   );
 }
 
+function CopyLink({ link }: { link: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => {
+    if (state === "idle") return;
+    const t = setTimeout(() => setState("idle"), 2500);
+    return () => clearTimeout(t);
+  }, [state]);
+  const copy = () => {
+    if (!navigator.clipboard) return setState("failed");
+    navigator.clipboard.writeText(link).then(
+      () => setState("copied"),
+      () => setState("failed"),
+    );
+  };
+  return (
+    <>
+      <button type="button" className="btn btn-primary" data-testid="copy-link" onClick={copy}>
+        {state === "copied" ? "Link copied" : "Copy link"}
+      </button>
+      <span role="status" className="text-[0.82rem] text-stamp">
+        {state === "failed" ? "Couldn't reach the clipboard. Use passstream copy link instead." : ""}
+      </span>
+    </>
+  );
+}
+
+/** Stop ends the stream for everyone and retires the link, so it asks once. */
+function StopButton({ onStop }: { onStop: () => void }) {
+  const [confirm, setConfirm] = useState(false);
+  useEffect(() => {
+    if (!confirm) return;
+    const t = setTimeout(() => setConfirm(false), 6000);
+    return () => clearTimeout(t);
+  }, [confirm]);
+  if (!confirm)
+    return (
+      <button type="button" className="btn-quiet btn-danger ml-auto" data-testid="stop" onClick={() => setConfirm(true)}>
+        Stop sharing
+      </button>
+    );
+  return (
+    <span className="ml-auto flex flex-wrap items-center gap-2" role="group" aria-label="Stop sharing?">
+      <span className="text-[0.85rem] text-ink-soft">Ends it for everyone. The link stops working.</span>
+      <button type="button" className="btn btn-stamp" data-testid="stop-confirm" onClick={onStop} autoFocus>
+        Stop
+      </button>
+      <button type="button" className="btn" onClick={() => setConfirm(false)}>
+        Keep sharing
+      </button>
+    </span>
+  );
+}
+
+function StatusChip({ phase }: { phase: string }) {
+  const copy = PHASE_COPY[phase] ?? { label: phase, tone: "idle" as const };
+  const dot = { idle: "bg-ink-faint", live: "animate-breathe bg-stamp", warn: "bg-warn", off: "bg-ink-faint" }[copy.tone];
+  return (
+    <span className="inline-flex items-center gap-2 font-mono text-[0.75rem] tracking-[0.14em] uppercase" data-testid="phase" role="status">
+      <span aria-hidden="true" className={`size-2 rounded-full ${dot}`} />
+      {copy.label}
+    </span>
+  );
+}
+
 function SenderWindow({ store, trustedServer }: { store: ShellStore; trustedServer: boolean }) {
   const shell = useShell(store);
   const core = store.getCore();
   useCore(core);
   const [message, setMessage] = useState("");
+  const [picker, setPicker] = useState<{ text: string; error: boolean } | null>(null);
   const act = (op: string, args: Record<string, unknown>) => {
-    void core?.command("window", "", op, args).then((r: Result) => setMessage(r.ok ? "" : `${op}: ${r.error.code}`));
+    void core?.command("window", "", op, args).then((r: Result) => setMessage(r.ok ? "" : commandError(op, r.error.code)));
   };
   const share = async (test: boolean) => {
     if (!core) return;
+    setPicker(null);
     try {
       // Tab or system audio where the browser offers it; it travels E2EE like the picture.
       const stream = test
@@ -199,92 +319,140 @@ function SenderWindow({ store, trustedServer }: { store: ShellStore; trustedServ
       if (test && tone > 0) addTestTone(stream, tone);
       await core.share(stream);
     } catch (e) {
-      setMessage(String(e));
+      setPicker(shareError(e));
     }
   };
   useCurtainKey(core, act);
   const l = core?.latches;
+  const phase = core ? core.phase : shell.state;
   return (
-    <main className="min-h-dvh bg-paper text-ink" data-testid="sender" data-phase={core?.phase ?? shell.state}>
+    <main className="min-h-dvh bg-paper text-ink" data-testid="sender" data-phase={phase}>
       <header className="flex items-center justify-between border-b border-paper-edge px-5 py-3">
         <Brand />
-        <span className="font-mono text-[0.75rem] tracking-[0.14em] uppercase" data-testid="phase">
-          {core ? core.phase : shell.state}
-        </span>
+        <StatusChip phase={phase} />
       </header>
-      <div className="mx-auto max-w-2xl space-y-5 px-5 py-5">
-        {core?.features && core.cfg.channel && <OwnerActions channel={core.cfg.channel} />}
+      <div className="mx-auto max-w-2xl space-y-5 px-5 py-6">
         {trustedServer && (
           <p className="rounded-md bg-warn-tint px-3 py-2 text-[0.82rem] text-warn">
             Browser sender served by the PassStream server: it protects the stream against other people, not against a malicious server.
           </p>
         )}
-        {!core && <p data-testid="shell">{shell.detail ? `${shell.state} · ${shell.detail}` : shell.state}</p>}
+        {!core && (
+          <div data-testid="shell">
+            <p className="text-[1.05rem]">{SHELL_COPY[shell.state] ?? shell.state}</p>
+            {shell.detail && <p className="mt-1 text-[0.88rem] text-ink-mute">{shell.detail}</p>}
+          </div>
+        )}
         {core && core.phase === "ended" && (
-          <p className="text-[1.1rem]" data-testid="ended">
-            {core.endedReason === "superseded" ? "This window is no longer the sender." : "Sharing ended."}
-          </p>
+          <section className="sheet p-6" data-testid="ended">
+            <h1 className="display text-[1.7rem] leading-tight">{core.endedReason === "superseded" ? "This window is no longer the sender." : "Sharing ended."}</h1>
+            <p className="mt-2 text-ink-soft">
+              {core.endedReason === "superseded"
+                ? "Another window took over this stream. You can close this one."
+                : "Nothing is leaving this machine any more, and the link no longer works. You can close this window."}
+            </p>
+          </section>
         )}
         {core && core.phase !== "ended" && (
           <>
-            <PinPanel core={core} />
-            <div className="flex flex-wrap gap-2">
-              {!core.capture && (
-                <>
-                  <Btn tone="stamp" testid="share" onClick={() => void share(false)}>
+            {!core.capture && (
+              <section className="sheet animate-rise p-6" aria-labelledby="pick-title">
+                <p className="label text-stamp">Not sharing yet</p>
+                <h1 id="pick-title" className="display mt-1 text-[1.9rem] leading-tight">
+                  Pick what to share.
+                </h1>
+                <p className="mt-2 text-ink-soft">
+                  Your browser asks which screen, window or tab. Nothing leaves this machine until you choose one, and you can pause or stop at any time.
+                </p>
+                <div className="mt-5 flex flex-wrap items-center gap-3">
+                  <button type="button" className="btn btn-stamp min-h-12 px-5 text-[0.95rem]" data-testid="share" onClick={() => void share(false)} autoFocus>
                     Share screen, window or tab
-                  </Btn>
+                  </button>
                   {SENDER_TEST_HOOKS && (
                     <Btn testid="test-source" onClick={() => void share(true)}>
                       Start test source
                     </Btn>
                   )}
-                </>
-              )}
-              <Btn tone="ghost" testid="copy-link" onClick={() => void navigator.clipboard?.writeText(core.link)}>
-                Copy link
-              </Btn>
-              {l?.paused ? (
-                <Btn testid="resume" onClick={() => act("resume", {})}>
-                  Resume
-                </Btn>
-              ) : (
-                <Btn testid="pause" onClick={() => act("pause", {})}>
-                  Pause · Esc
-                </Btn>
-              )}
-              <Btn tone="ghost" testid="lock" onClick={() => act("lock", { locked: !l?.locked })}>
-                {l?.locked ? "Unlock" : "Lock"}
-              </Btn>
-              {l?.frozen && (
-                <Btn tone="ghost" testid="unfreeze" onClick={() => act("unfreeze", {})}>
-                  Unfreeze (new PIN)
-                </Btn>
-              )}
-              <Btn tone="ghost" testid="mode" onClick={() => act("mode", { mode: core.mode === "text" ? "motion" : "text" })}>
-                {core.mode === "text" ? "Text mode" : "Motion mode"}
-              </Btn>
-              <Btn tone="ghost" testid="safe" onClick={() => act("safe", { on: !core.safe })}>
-                {core.safe ? "Safe mode: on" : "Safe mode: off"}
-              </Btn>
-              <Btn tone="ghost" testid="stop" onClick={() => act("stop", {})}>
-                Stop
-              </Btn>
-            </div>
-            <SafeStatus core={core} />
+                </div>
+                {picker && (
+                  <p role={picker.error ? "alert" : "status"} className={`mt-3 text-[0.88rem] ${picker.error ? "text-stamp" : "text-ink-mute"}`} data-testid="picker-note">
+                    {picker.text}
+                  </p>
+                )}
+              </section>
+            )}
+            <section className="space-y-3" aria-labelledby="invite-title">
+              <h2 id="invite-title" className="text-[0.8rem] tracking-[0.12em] text-ink-mute uppercase">
+                Invite viewers
+              </h2>
+              <div className="flex flex-wrap items-center gap-3">
+                <CopyLink link={core.link} />
+              </div>
+              <PinPanel core={core} />
+              {core.policy.kind !== "none" && <p className="text-[0.82rem] text-ink-mute">Send the link and the PIN separately, so one leaked message isn't enough to watch.</p>}
+            </section>
+            <section className="space-y-2" aria-labelledby="controls-title">
+              <h2 id="controls-title" className="text-[0.8rem] tracking-[0.12em] text-ink-mute uppercase">
+                Controls
+              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                {l?.paused ? (
+                  <button type="button" className="btn btn-primary" data-testid="resume" onClick={() => act("resume", {})}>
+                    Resume
+                  </button>
+                ) : (
+                  <button type="button" className="btn" data-testid="pause" title="Hide your screen from viewers. Escape does the same." onClick={() => act("pause", {})}>
+                    Pause · Esc
+                  </button>
+                )}
+                <button type="button" className="btn" data-testid="lock" aria-pressed={!!l?.locked} title={l?.locked ? "Let new viewers join again" : "Keep current viewers, let nobody new in"} onClick={() => act("lock", { locked: !l?.locked })}>
+                  {l?.locked ? "Unlock" : "Lock"}
+                </button>
+                {l?.frozen && (
+                  <button type="button" className="btn" data-testid="unfreeze" onClick={() => act("unfreeze", {})}>
+                    Unfreeze (new PIN)
+                  </button>
+                )}
+                <span className="inline-flex items-center gap-2 text-[0.82rem] text-ink-mute" role="group" aria-label="Optimise for">
+                  Optimise for
+                  <span className="inline-flex overflow-hidden rounded-md border border-ink">
+                    {(["text", "motion"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        aria-pressed={core.mode === m}
+                        data-testid={`mode-${m}`}
+                        title={m === "text" ? "Sharp text; motion may stutter" : "Smooth video; small text may soften"}
+                        className={`min-h-10 px-3 text-sm font-semibold ${core.mode === m ? "bg-ink text-paper" : "text-ink hover:bg-paper-deep"}`}
+                        onClick={() => core.mode !== m && act("mode", { mode: m })}
+                      >
+                        {m === "text" ? "Text" : "Motion"}
+                      </button>
+                    ))}
+                  </span>
+                </span>
+                <button type="button" className="btn" data-testid="safe" aria-pressed={core.safe} onClick={() => act("safe", { on: !core.safe })}>
+                  {core.safe ? "Safe mode: on" : "Safe mode: off"}
+                </button>
+                <StopButton onStop={() => act("stop", {})} />
+              </div>
+              <SafeStatus core={core} />
+              {l?.locked && <p className="text-[0.82rem] text-warn">Locked: nobody new can join until you unlock.</p>}
+            </section>
+            {message && (
+              <p role="alert" className="rounded-md border-l-2 border-stamp bg-stamp-tint px-3 py-2 text-[0.88rem] text-stamp-deep" data-testid="command-error">
+                {message}
+              </p>
+            )}
             <CurtainBanner core={core} act={act} />
             <Preview core={core} act={act} />
-            <SenderHudPanel core={core} />
             {core.host.revocationNotDurable && <p className="text-stamp">Storage failed: media is stopped and joining is refused until it recovers.</p>}
             {core.recovery.state !== "idle" && <p className="text-warn">PIN change pending ({core.recovery.state}).</p>}
             <Knocks core={core} act={act} />
             <Viewers core={core} act={act} />
+            <SenderHudPanel core={core} />
+            {core.features && core.cfg.channel && <OwnerActions channel={core.cfg.channel} capturing={!!core.capture} />}
           </>
-        )}
-        {message && (
-          <p role="alert" className="text-[0.85rem] text-stamp">
-            {message}
-          </p>
         )}
       </div>
     </main>

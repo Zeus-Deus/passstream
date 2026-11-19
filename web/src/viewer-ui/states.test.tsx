@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import { isDegraded, qualityBars, type Quality } from "./Player";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { isDegraded, qualityBars, WEAK_HOLD_MS, type Quality } from "./Player";
 import { rowCodeColour } from "./rowcode";
 import { missingFeatures, ViewerScreen, type ViewerState } from "./states";
 
@@ -114,7 +114,10 @@ describe("Player controls", () => {
   it("shows the quality pill only when degraded, with the HUD on tap", () => {
     const { rerender } = render(<ViewerScreen state={{ kind: "live" }} quality={GOOD} />);
     expect(screen.queryByTestId("quality-pill")).toBeNull();
+    vi.useFakeTimers();
     rerender(<ViewerScreen state={{ kind: "live" }} quality={WEAK} />);
+    act(() => void vi.advanceTimersByTime(WEAK_HOLD_MS));
+    vi.useRealTimers();
     expect(screen.queryByTestId("hud")).toBeNull();
     fireEvent.click(screen.getByTestId("quality-pill"));
     expect(screen.getByTestId("hud")).toHaveTextContent("260 ms");
@@ -149,6 +152,9 @@ describe("quality", () => {
     expect(isDegraded(GOOD)).toBe(false);
     expect(isDegraded(WEAK)).toBe(true);
     expect(isDegraded({ ...GOOD, fps: 2 })).toBe(true);
+    // Paused: a slow still picture isn't a slow connection.
+    expect(isDegraded({ ...GOOD, fps: 2 }, false)).toBe(false);
+    expect(isDegraded(WEAK, false)).toBe(true);
   });
 });
 

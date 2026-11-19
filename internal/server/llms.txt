@@ -1097,7 +1097,7 @@ Init {
 - PIN changes (`pin rotate`, `pin none`, `pin set`, `unfreeze`, `kick --rotate-pin`) exit 1 with `rotation_pending` while another change is pending; with `--wait` they wait (up to `--timeout`) until `access.rotation_pending` is `false` and send again. A `storage` reply with `details.pending: true` prints "PIN change accepted, still being applied" and exits 0.
 - `link` prints the link on explicit local request. `ban <connection_id> [--action-id ID]` retries `server_unreachable` and `sender_timeout` up to three attempts with the same action id. Kick, unfreeze, PIN changes and knock approval also accept `--action-id` to reuse an action across CLI runs.
 - If the daemon is unreachable, the CLI starts `passstream host --detach` and retries for 5 s; failure is `daemon_unreachable` (exit 3). `host install-units [--no-enable]` installs the two user units.
-- With `--json`, results go to stdout and `{"error": Error}` to stderr.
+- With `--json`, results go to stdout and `{"error": Error}` to stderr. Ctrl+C at an interactive passphrase prompt exits silently with status `130`.
 - Exit codes: `0` ok, `1` error, `2` usage, `3` daemon not reachable, `4` `port_not_owned`.
 
 ### 12.1 Local capture CLI

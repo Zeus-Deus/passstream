@@ -4,24 +4,38 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/passstream/passstream/internal/host/daemon"
+	"github.com/passstream/passstream/internal/host/hostcmd"
 	"github.com/passstream/passstream/internal/host/hosttest"
 	"github.com/passstream/passstream/internal/host/listen"
 	"github.com/passstream/passstream/internal/host/procnet"
+	"github.com/passstream/passstream/internal/host/proto"
 )
 
+const configErrorHelper = "PASSSTREAM_TEST_CONFIG_ERROR"
+
 func TestMain(m *testing.M) {
-	// The test binary is also the detached clipboard helper (wlClipboard).
-	if len(os.Args) > 1 && os.Args[1] == serveCommand {
-		os.Exit(Main(os.Args[1:]))
+	// The CLI runs these commands by starting another copy of its binary.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case serveCommand:
+			os.Exit(Main(os.Args[1:]))
+		case "host":
+			if os.Getenv(configErrorHelper) == "1" {
+				os.Exit(hostcmd.Main(os.Args[2:]))
+			}
+		}
 	}
 	hosttest.MaybeFakeBrowser()
 	os.Exit(m.Run())
@@ -41,6 +55,40 @@ func runCLI(t *testing.T, stdin string, args ...string) result {
 		Sleep:      func(time.Duration) {}}
 	code := Run(args, env)
 	return result{code, out.String(), errb.String()}
+}
+
+func TestShareHelpWithoutDaemon(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	for _, args := range [][]string{
+		{"share", "--help"},
+		{"share", "-h"},
+		{"start", "--help"},
+		{"help", "share"},
+		{"help", "start"},
+		{"share", "--no-wait", "--help"},
+		{"share", "--help", "--knock"},
+		{"start", "--pin", "6", "--json", "-h"},
+		{"share", "--label", "--help", "-h"},
+	} {
+		r := runCLI(t, "", args...)
+		if r.code != 0 || r.stderr != "" || !strings.Contains(r.stdout, "passstream share [--pin") || !strings.Contains(r.stdout, "Choose a source in the sender window") {
+			t.Errorf("%v: %+v", args, r)
+		}
+	}
+}
+
+func TestShareHelpFlagCanBeALabel(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	for _, args := range [][]string{
+		{"share", "--label=--help"},
+		{"share", "--label", "--help"},
+		{"start", "--label", "-h"},
+	} {
+		r := runCLI(t, "", args...)
+		if r.code == 0 || r.stdout != "" || !strings.Contains(r.stderr, "XDG_RUNTIME_DIR is not set") {
+			t.Errorf("%v: expected to reach daemon setup, got %+v", args, r)
+		}
+	}
 }
 
 func TestUsageNeverEchoesSecrets(t *testing.T) {
@@ -116,6 +164,65 @@ func daemonFor(t *testing.T, mutate func(*daemon.Config)) *hosttest.FakeServer {
 		<-done
 	})
 	return srv
+}
+
+func TestHostConfigErrorIsOneJSONDocument(t *testing.T) {
+	if os.Getenv(configErrorHelper) == "1" {
+		os.Exit(Main([]string{"status", "--json"}))
+	}
+	root := t.TempDir()
+	conf := filepath.Join(root, "passstream")
+	if err := os.Mkdir(conf, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conf, "config"), []byte("server = http://stream.invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHostConfigErrorIsOneJSONDocument$")
+	cmd.Env = append(os.Environ(), configErrorHelper+"=1", "XDG_RUNTIME_DIR="+root, "XDG_STATE_HOME="+root, "XDG_CONFIG_HOME="+root)
+	stdout, err := cmd.Output()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 3 || len(stdout) != 0 {
+		t.Fatalf("status --json: stdout %q, error %v", stdout, err)
+	}
+	var body struct{ Error proto.Error }
+	if err := json.Unmarshal(exit.Stderr, &body); err != nil {
+		t.Fatalf("status --json stderr %q: %v", exit.Stderr, err)
+	}
+	if body.Error.Code != "daemon_unreachable" || !strings.Contains(body.Error.Message, "plain http is allowed only on loopback") {
+		t.Fatalf("unexpected error: %+v", body.Error)
+	}
+}
+
+func TestLaunchAndDialWaitsForSocketAfterLauncherFailure(t *testing.T) {
+	rt := filepath.Join(t.TempDir(), "passstream")
+	if err := os.Mkdir(rt, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(rt, "host.sock")
+	synctest.Test(t, func(t *testing.T) {
+		c, err := launchAndDial(sock, func() error {
+			// The independently started listener appears after the first probe.
+			time.AfterFunc(50*time.Millisecond, func() {
+				ln, listenErr := net.Listen("unix", sock)
+				if listenErr != nil {
+					t.Error(listenErr)
+					return
+				}
+				t.Cleanup(func() { ln.Close() })
+				if chmodErr := os.Chmod(sock, 0o600); chmodErr != nil {
+					t.Error(chmodErr)
+				}
+			})
+			return errors.New("launcher failed")
+		})
+		if err != nil {
+			t.Fatalf("expected to connect to the independently started daemon: %v", err)
+		}
+		c.Close()
+	})
 }
 
 func TestCLIAgainstDaemon(t *testing.T) {
@@ -254,5 +361,22 @@ func TestSafeModeCommands(t *testing.T) {
 		if got := safe(); got != c.want {
 			t.Fatalf("safe %s: safe = %v", c.arg, got)
 		}
+	}
+}
+
+func TestStatusSaysWhenNoServerIsConfigured(t *testing.T) {
+	daemon := map[string]any{"version": "dev", "server_url": "", "server": "ok", "key": "missing", "port_owner": "ok", "port_mode": "self_bound"}
+	got := humanStatus(map[string]any{"daemon": daemon})
+	if strings.Contains(got, "(ok)") || !strings.Contains(got, "server not configured") {
+		t.Errorf("an unconfigured server must not read as ok: %q", got)
+	}
+	// The host reads $XDG_CONFIG_HOME/passstream/config only when that is an absolute path, and
+	// ~/.config otherwise (unset, empty or relative): the hint must say which applies.
+	if !strings.Contains(got, "$XDG_CONFIG_HOME/passstream/config when XDG_CONFIG_HOME is an absolute path") || !strings.Contains(got, "otherwise in ~/.config/passstream/config") {
+		t.Errorf("config guidance must name the XDG location and its fallback: %q", got)
+	}
+	daemon["server_url"] = "https://stream.example"
+	if got := humanStatus(map[string]any{"daemon": daemon}); !strings.Contains(got, "server https://stream.example (ok)") {
+		t.Errorf("configured server line changed: %q", got)
 	}
 }

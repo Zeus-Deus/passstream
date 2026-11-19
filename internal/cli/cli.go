@@ -8,9 +8,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +31,7 @@ const (
 	exitUsage       = 2
 	exitUnreachable = 3
 	exitPort        = 4
+	exitInterrupted = 130
 )
 
 // Env is the process environment, replaceable in tests.
@@ -65,13 +68,19 @@ func isTTY(fd int) bool {
 	return err == nil
 }
 
+var errPromptInterrupted = errors.New("the terminal prompt was interrupted")
+
 // readSecretTTY prompts on /dev/tty with echo off.
 func readSecretTTY(prompt string) (string, error) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	// Keep the terminal pollable after Fd so Close can unblock pending I/O.
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return "", err
 	}
 	defer tty.Close()
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	defer signal.Stop(interrupt)
 	fd := int(tty.Fd())
 	old, err := unix.IoctlGetTermios(fd, unix.TCGETS)
 	if err != nil {
@@ -82,14 +91,39 @@ func readSecretTTY(prompt string) (string, error) {
 	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &nw); err != nil {
 		return "", err
 	}
-	defer unix.IoctlSetTermios(fd, unix.TCSETS, old)
-	fmt.Fprint(tty, prompt)
-	line, err := bufio.NewReader(tty).ReadString('\n')
-	fmt.Fprintln(tty)
-	if err != nil && line == "" {
-		return "", err
+	completed := false
+	defer func() {
+		// Restore echo before attempting any further terminal output.
+		_ = unix.IoctlSetTermios(fd, unix.TCSETS, old)
+		if completed {
+			// Bypass the Go poller so the newline never waits for output space.
+			_, _ = unix.Write(fd, []byte("\n"))
+		}
+	}()
+	type input struct {
+		line string
+		err  error
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	replies := make(chan input, 1)
+	go func() {
+		if _, err := io.WriteString(tty, prompt); err != nil {
+			replies <- input{err: err}
+			return
+		}
+		line, err := bufio.NewReader(tty).ReadString('\n')
+		replies <- input{line, err}
+	}()
+	var reply input
+	select {
+	case <-interrupt:
+		return "", errPromptInterrupted
+	case reply = <-replies:
+		completed = true
+	}
+	if reply.err != nil && reply.line == "" {
+		return "", reply.err
+	}
+	return strings.TrimRight(reply.line, "\r\n"), nil
 }
 
 // usageError is exit code 2. Its message never contains the offending
@@ -126,10 +160,13 @@ type opts struct {
 
 // parse reads flags anywhere among the arguments. A value-looking --pin is
 // refused without echoing it (CONTRACT §12).
-func parse(args []string) (*opts, error) {
+func parse(args []string, shareHelpEnabled bool) (*opts, error) {
 	o := &opts{pinFD: -1, timeout: 120 * time.Second}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if shareHelpEnabled && (a == "--help" || a == "-h") {
+			return nil, flag.ErrHelp
+		}
 		name, val, hasVal := a, "", false
 		if strings.HasPrefix(a, "--") {
 			if k, v, ok := strings.Cut(a, "="); ok {
@@ -274,11 +311,23 @@ func NormalizeCode(s string) (string, bool) {
 	return string(b), proto.IsRowCode(string(b))
 }
 
+const shareUsage = `  passstream share [--pin 4-12|none|passphrase] [--pin-stdin|--pin-fd N] [--knock]
+                   [--label L] [--motion] [--no-safe] [--no-wait] [--timeout 120s] [--json]
+`
+
+const shareHelp = `Share a screen, window or tab.
+
+` + shareUsage + `
+Choose a source in the sender window. The command prints the link once the
+share is live. Use --no-wait to print the link as soon as it's ready.
+
+--pin sets the PIN policy. For a passphrase, enter it at the hidden prompt
+or supply it with --pin-stdin or --pin-fd.
+`
+
 const help = `passstream: private live screen sharing (local commands talk to the host daemon)
 
-  passstream share [--pin 4|6|none|passphrase] [--pin-stdin|--pin-fd N] [--knock]
-                   [--label L] [--motion] [--no-safe] [--no-wait] [--timeout 120s] [--json]
-  passstream stop | pause | resume | lock | unlock
+` + shareUsage + `  passstream stop | pause | resume | lock | unlock
   passstream safe on|off              (redact sensitive data; on by default)
   passstream curtain on|off           (privacy curtain: the pause latch)
   passstream annotations on|off|clear (viewers may draw; host-only by default)
@@ -306,6 +355,8 @@ something newer replaced it; a clipboard history may already have stored it.
 Ban, kick, unfreeze, PIN changes and knock approval use one action id per action
 (pass --action-id to reuse one across runs). Ban retries transient failures.
 Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not reachable, 4 port_not_owned.
+Ctrl+C at an interactive passphrase prompt exits silently with status 130,
+including in --json mode.
 `
 
 // Main runs the CLI and returns the exit code.
@@ -313,6 +364,10 @@ func Main(args []string) int { return Run(args, defaultEnv()) }
 
 // Run is Main with an explicit environment.
 func Run(args []string, env *Env) int {
+	if len(args) == 2 && args[0] == "help" && (args[1] == "share" || args[1] == "start") {
+		fmt.Fprint(env.Stdout, shareHelp)
+		return exitOK
+	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		fmt.Fprint(env.Stdout, help)
 		if len(args) == 0 {
@@ -328,7 +383,11 @@ func Run(args []string, env *Env) int {
 	if cmd == serveCommand {
 		return clipboardServe(args[1:], env)
 	}
-	o, err := parse(args[1:])
+	o, err := parse(args[1:], cmd == "share" || cmd == "start")
+	if err == flag.ErrHelp {
+		fmt.Fprint(env.Stdout, shareHelp)
+		return exitOK
+	}
 	if err == nil {
 		err = run(cmd, o, env)
 	}
@@ -345,6 +404,10 @@ func Run(args []string, env *Env) int {
 func finish(err error, jsonOut bool, env *Env) int {
 	if err == nil {
 		return exitOK
+	}
+	if errors.Is(err, errPromptInterrupted) {
+		// The caller cancelled with Ctrl+C. Even stderr may be the blocked terminal.
+		return exitInterrupted
 	}
 	var u usageError
 	if errors.As(err, &u) {
@@ -364,7 +427,10 @@ func finish(err error, jsonOut bool, env *Env) int {
 		e = proto.E("internal", "%s", err.Error())
 	}
 	printErr(env, jsonOut, e)
-	if e.Code == "port_not_owned" {
+	switch e.Code {
+	case "daemon_unreachable":
+		return exitUnreachable
+	case "port_not_owned":
 		return exitPort
 	}
 	return exitError
@@ -422,6 +488,9 @@ func readPin(o *opts, env *Env, required bool, prompt string) (*string, error) {
 		s = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 	case required && env.IsTTY():
 		v, err := env.ReadSecret(prompt)
+		if errors.Is(err, errPromptInterrupted) {
+			return nil, err
+		}
 		if err != nil {
 			return nil, usage("can't read the value from the terminal")
 		}
@@ -969,7 +1038,14 @@ func share(o *opts, env *Env) error {
 
 func humanStatus(data any) string {
 	d, _ := field(data, "daemon").(map[string]any)
-	lines := []string{fmt.Sprintf("daemon %v · server %v (%v) · key %v · port %v (%v)", d["version"], d["server_url"], d["server"], d["key"], d["port_owner"], d["port_mode"])}
+	// Without a URL the daemon has never contacted a server: its "ok" is only a default.
+	server := fmt.Sprintf("server %v (%v)", d["server_url"], d["server"])
+	if url, _ := d["server_url"].(string); url == "" {
+		// The host reads $XDG_CONFIG_HOME when it is an absolute path (daemon.DefaultPaths) and
+		// ~/.config otherwise; naming only one would point some users at a file it ignores.
+		server = "server not configured (set server = URL in $XDG_CONFIG_HOME/passstream/config when XDG_CONFIG_HOME is an absolute path, otherwise in ~/.config/passstream/config)"
+	}
+	lines := []string{fmt.Sprintf("daemon %v · %s · key %v · port %v (%v)", d["version"], server, d["key"], d["port_owner"], d["port_mode"])}
 	s, ok := field(data, "stream").(map[string]any)
 	if !ok {
 		return strings.Join(append(lines, "no share"), "\n")

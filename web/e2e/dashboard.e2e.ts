@@ -72,6 +72,11 @@ test("every dashboard screen renders against the real server", async ({ page }, 
   await expect(page.getByRole("heading", { name: "Defaults for new streams" })).toBeVisible();
   await expect(page.getByTestId("max-viewers")).toHaveValue("100");
   await noHorizontalOverflow(page);
+  // Next to their wrapping labels the checkboxes keep their 20 px square, down to 320 px.
+  for (const box of [page.getByRole("checkbox", { name: /Knock to join/ }), page.getByTestId("keep-ip")]) {
+    const { width, height } = (await box.boundingBox())!;
+    expect([Math.round(width), Math.round(height)]).toEqual([20, 20]);
+  }
   await shot(page, info, "dashboard-settings", true);
 });
 
@@ -176,11 +181,27 @@ test("settings, key management and sign-out", async ({ page }, info) => {
   await expect(page.getByRole("heading", { name: "Sign in with a key." })).toBeVisible();
 });
 
-test("the phase-1 pages still render with their own styles", async ({ page }, info) => {
-  test.skip(info.project.name !== "desktop", "one run");
+test("first-time visitors can find viewer instructions and the owner dashboard", async ({ page }) => {
   await page.goto(`${env().base}/`);
-  await expect(page.getByRole("button", { name: "Create stream" })).toBeVisible();
-  // style.css is applied (its header rule), and the dashboard theme isn't loaded.
-  expect(await page.evaluate(() => getComputedStyle(document.querySelector("header")!).display)).toBe("flex");
-  expect(await page.evaluate(() => [...document.styleSheets].some((s) => s.href?.includes("theme")))).toBe(false);
+  await expect(page.getByRole("heading", { name: "Watch a stream" })).toBeVisible();
+  await expect(page.getByText(/private link from your host/)).toBeVisible();
+  await expect(page.getByRole("link", { name: "Set up your sender" })).toHaveAttribute("href", "https://github.com/Zeus-Deus/passstream#run-locally");
+  await expect(page.getByText("passstream share", { exact: true })).toBeVisible();
+  await noHorizontalOverflow(page);
+  await page.getByRole("link", { name: "Owner dashboard" }).click();
+  await expect(page.getByLabel("API key")).toBeVisible();
+});
+
+test("a disabled Sign in button looks the same under the pointer", async ({ page }) => {
+  await page.goto(`${env().base}/dashboard`);
+  const button = page.getByRole("button", { name: "Sign in" });
+  await expect(button).toBeDisabled();
+  const look = () => button.evaluate((e) => [getComputedStyle(e).backgroundColor, getComputedStyle(e).color]);
+  const rest = await look();
+  await button.hover({ force: true });
+  await page.waitForTimeout(250); // past the background transition
+  expect(await look()).toEqual(rest);
+  // A fill, and a label that isn't the page colour.
+  expect(rest[0]).toBe("rgb(203, 191, 159)");
+  expect(rest[1]).toBe("rgb(110, 99, 90)");
 });
