@@ -184,3 +184,17 @@ test("the phase-1 pages still render with their own styles", async ({ page }, in
   expect(await page.evaluate(() => getComputedStyle(document.querySelector("header")!).display)).toBe("flex");
   expect(await page.evaluate(() => [...document.styleSheets].some((s) => s.href?.includes("theme")))).toBe(false);
 });
+
+test("a disabled Sign in button looks the same under the pointer", async ({ page }) => {
+  await page.goto(`${env().base}/dashboard`);
+  const button = page.getByRole("button", { name: "Sign in" });
+  await expect(button).toBeDisabled();
+  const look = () => button.evaluate((e) => [getComputedStyle(e).backgroundColor, getComputedStyle(e).color]);
+  const rest = await look();
+  await button.hover({ force: true });
+  await page.waitForTimeout(250); // past the background transition
+  expect(await look()).toEqual(rest);
+  // A fill, and a label that isn't the page colour.
+  expect(rest[0]).toBe("rgb(203, 191, 159)");
+  expect(rest[1]).toBe("rgb(110, 99, 90)");
+});
