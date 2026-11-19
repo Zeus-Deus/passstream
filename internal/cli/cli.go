@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -158,10 +159,13 @@ type opts struct {
 
 // parse reads flags anywhere among the arguments. A value-looking --pin is
 // refused without echoing it (CONTRACT §12).
-func parse(args []string) (*opts, error) {
+func parse(args []string, shareHelpEnabled bool) (*opts, error) {
 	o := &opts{pinFD: -1, timeout: 120 * time.Second}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if shareHelpEnabled && (a == "--help" || a == "-h") {
+			return nil, flag.ErrHelp
+		}
 		name, val, hasVal := a, "", false
 		if strings.HasPrefix(a, "--") {
 			if k, v, ok := strings.Cut(a, "="); ok {
@@ -304,11 +308,23 @@ func NormalizeCode(s string) (string, bool) {
 	return string(b), proto.IsRowCode(string(b))
 }
 
+const shareUsage = `  passstream share [--pin 4-12|none|passphrase] [--pin-stdin|--pin-fd N] [--knock]
+                   [--label L] [--motion] [--no-wait] [--timeout 120s] [--json]
+`
+
+const shareHelp = `Share a screen, window or tab.
+
+` + shareUsage + `
+Choose a source in the sender window. The command prints the link once the
+share is live. Use --no-wait to print the link as soon as it's ready.
+
+--pin sets the PIN policy. For a passphrase, enter it at the hidden prompt
+or supply it with --pin-stdin or --pin-fd.
+`
+
 const help = `passstream: private live screen sharing (local commands talk to the host daemon)
 
-  passstream share [--pin 4|6|none|passphrase] [--pin-stdin|--pin-fd N] [--knock]
-                   [--label L] [--motion] [--no-wait] [--timeout 120s] [--json]
-  passstream stop | pause | resume | lock | unlock
+` + shareUsage + `  passstream stop | pause | resume | lock | unlock
   passstream curtain on|off           (privacy curtain: the pause latch)
   passstream annotations on|off|clear (viewers may draw; host-only by default)
   passstream unfreeze [--keep-pin] [--pin-stdin|--pin-fd N] [--wait]
@@ -344,6 +360,10 @@ func Main(args []string) int { return Run(args, defaultEnv()) }
 
 // Run is Main with an explicit environment.
 func Run(args []string, env *Env) int {
+	if len(args) == 2 && args[0] == "help" && (args[1] == "share" || args[1] == "start") {
+		fmt.Fprint(env.Stdout, shareHelp)
+		return exitOK
+	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		fmt.Fprint(env.Stdout, help)
 		if len(args) == 0 {
@@ -359,7 +379,11 @@ func Run(args []string, env *Env) int {
 	if cmd == serveCommand {
 		return clipboardServe(args[1:], env)
 	}
-	o, err := parse(args[1:])
+	o, err := parse(args[1:], cmd == "share" || cmd == "start")
+	if err == flag.ErrHelp {
+		fmt.Fprint(env.Stdout, shareHelp)
+		return exitOK
+	}
 	if err == nil {
 		err = run(cmd, o, env)
 	}
