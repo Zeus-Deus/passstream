@@ -262,7 +262,11 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
       run.current = NO_WEAK_RUN;
       return setRunHeld(false);
     }
+    // A new timestamp advances the run. The same measurement can also stop
+    // counting as weak (the host paused, so its frame rate no longer matters):
+    // that ends the run at once, without waiting for the next sample.
     if (sampledAt !== run.current.last) run.current = weakRun(run.current, sampledAt, weakNow);
+    else if (!weakNow) run.current = { ...NO_WEAK_RUN, last: sampledAt };
     setRunHeld(run.current.held);
     // No newer measurement by the time this one is stale: the run is over.
     const t = setTimeout(() => {

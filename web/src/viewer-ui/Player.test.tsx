@@ -246,6 +246,21 @@ describe("weak connection pill", () => {
     expect(screen.queryByTestId("quality-pill")).toBeNull();
   });
 
+  it("drops a frame-rate warning the moment the host pauses, on the same sample", () => {
+    vi.useFakeTimers();
+    const JERKY = { ...FINE, fps: 2 };
+    const { rerender } = render(<Player state="live" quality={{ ...JERKY, at: Date.now() }} autoHideMs={0} />);
+    feed(rerender, () => JERKY, 6);
+    expect(screen.getByTestId("quality-pill")).toHaveTextContent("Weak connection");
+    // Paused with the last measurement unchanged: no new sample, no clock advance.
+    const last = { ...JERKY, at: Date.now() };
+    rerender(<Player state="paused" quality={last} autoHideMs={0} />);
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+    // Resuming on that same sample doesn't bring it back: the run starts over.
+    rerender(<Player state="live" quality={{ ...last }} autoHideMs={0} />);
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+  });
+
   it("a healthy or unknown measurement ends the run", () => {
     vi.useFakeTimers();
     const { rerender } = render(<Player state="live" quality={{ ...SLOW, at: Date.now() }} autoHideMs={0} />);
