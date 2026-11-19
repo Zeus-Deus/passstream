@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Player, STALE_SAMPLE_MS, useWakeLock, WEAK_HOLD_MS } from "./Player";
+import { NO_WEAK_RUN, Player, STALE_SAMPLE_MS, useWakeLock, WEAK_HOLD_MS, weakRun, type Quality } from "./Player";
 import { ROW_COLOUR_HEX, rowCodeColour } from "./rowcode";
 
 afterEach(() => {
@@ -199,9 +199,18 @@ describe("weak connection pill", () => {
     expect(screen.queryByTestId("quality-pill")).toBeNull();
   });
 
+  // Timestamped measurements, as the real viewer delivers them: one every 500 ms.
+  const feed = (rerender: (ui: React.ReactElement) => void, q: () => Quality, polls: number) => {
+    for (let i = 0; i < polls; i++) {
+      act(() => void vi.advanceTimersByTime(500));
+      rerender(<Player state="live" quality={{ ...q(), at: Date.now() }} autoHideMs={0} />);
+    }
+  };
+  const SLOW = { ...FINE, rtt_ms: 400 };
+
   it("doesn't let one weak sample become a warning when sampling stalls", () => {
     vi.useFakeTimers();
-    const spike = { ...FINE, loss_pct: 14, at: 1000 };
+    const spike = { ...FINE, loss_pct: 14, at: Date.now() };
     const { rerender } = render(<Player state="live" quality={spike} autoHideMs={0} />);
     // The same measurement keeps being handed over; nothing newer arrives.
     for (let i = 0; i < 12; i++) {
@@ -211,16 +220,38 @@ describe("weak connection pill", () => {
     }
   });
 
+  it("doesn't finish the hold on the clock when sampling stalls partway through", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<Player state="live" quality={{ ...SLOW, at: Date.now() }} autoHideMs={0} />);
+    feed(rerender, () => SLOW, 3); // weak at 0, 0.5, 1 and 1.5 s, then nothing
+    for (let i = 0; i < 10; i++) {
+      act(() => void vi.advanceTimersByTime(500));
+      expect(screen.queryByTestId("quality-pill")).toBeNull();
+    }
+    // Sampling resumes, still weak: the hold starts over from the first new measurement.
+    feed(rerender, () => SLOW, 6);
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+    feed(rerender, () => SLOW, 1);
+    expect(screen.getByTestId("quality-pill")).toHaveTextContent("Weak connection");
+  });
+
   it("counts weak samples that keep arriving, and drops the warning when they stop", () => {
     vi.useFakeTimers();
-    let at = 1000;
-    const { rerender } = render(<Player state="live" quality={{ ...FINE, rtt_ms: 400, at }} autoHideMs={0} />);
-    for (let i = 0; i < 6; i++) {
-      act(() => void vi.advanceTimersByTime(500));
-      rerender(<Player state="live" quality={{ ...FINE, rtt_ms: 400, at: (at += 500) }} autoHideMs={0} />);
-    }
+    const { rerender } = render(<Player state="live" quality={{ ...SLOW, at: Date.now() }} autoHideMs={0} />);
+    feed(rerender, () => SLOW, 5);
+    expect(screen.queryByTestId("quality-pill")).toBeNull(); // 2.5 s of evidence
+    feed(rerender, () => SLOW, 1);
     expect(screen.getByTestId("quality-pill")).toHaveTextContent("Weak connection");
     act(() => void vi.advanceTimersByTime(STALE_SAMPLE_MS));
+    expect(screen.queryByTestId("quality-pill")).toBeNull();
+  });
+
+  it("a healthy or unknown measurement ends the run", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<Player state="live" quality={{ ...SLOW, at: Date.now() }} autoHideMs={0} />);
+    feed(rerender, () => SLOW, 4);
+    feed(rerender, () => ({ ...FINE, rtt_ms: null, loss_pct: null }), 1);
+    feed(rerender, () => SLOW, 5);
     expect(screen.queryByTestId("quality-pill")).toBeNull();
   });
 
@@ -234,5 +265,26 @@ describe("weak connection pill", () => {
   it("shows Reconnecting at once", () => {
     render(<Player state="reconnecting" quality={FINE} autoHideMs={0} />);
     expect(screen.getByTestId("quality-pill")).toHaveTextContent("Reconnecting");
+  });
+});
+
+describe("weakRun", () => {
+  it("holds only once weak measurements span the hold by their own timestamps", () => {
+    let run = NO_WEAK_RUN;
+    for (const at of [0, 500, 1000, 1500, 2000, 2500]) run = weakRun(run, at, true);
+    expect(run.held).toBe(false);
+    expect(weakRun(run, 3000, true)).toEqual({ since: 0, last: 3000, held: true });
+  });
+
+  it("restarts after a gap, however late the next measurement is handed over", () => {
+    let run = NO_WEAK_RUN;
+    for (const at of [0, 500, 1000, 1500]) run = weakRun(run, at, true);
+    run = weakRun(run, 1500 + STALE_SAMPLE_MS, true);
+    expect(run).toEqual({ since: 3500, last: 3500, held: false });
+  });
+
+  it("ends on a measurement that isn't weak", () => {
+    const run = weakRun(weakRun(weakRun(NO_WEAK_RUN, 0, true), 3000, true), 3500, false);
+    expect(run).toEqual({ since: null, last: 3500, held: false });
   });
 });

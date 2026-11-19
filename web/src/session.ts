@@ -12,8 +12,9 @@ export type State =
  * for; without the video report there is no loss, rate or frame rate. Carrying the previous
  * values forward would present an old loss spike as a fresh reading.
  */
-export function unmeasuredCleared<T extends Pick<Quality, "path" | "loss" | "bitrate" | "fps">>(q: T, measured: { pair: boolean; video: boolean }): T {
-  const out = { ...q };
+export function unmeasuredCleared<T extends Pick<Quality, "path" | "loss" | "bitrate" | "fps" | "measured">>(q: T, measured: { pair: boolean; video: boolean }): T {
+  // The numbers below can't say "unknown" (0% loss is a real reading), so the sample says which were taken.
+  const out = { ...q, measured: { ...measured } };
   // The round trip itself stays: recovery pacing reads the last known one.
   // Without a path the viewer's HUD and signal bars already ignore it.
   if (!measured.pair) out.path = "—";
@@ -33,6 +34,8 @@ export type Quality = {
   frames: number;
   g2g: number;
   timestamp: number;
+  /** Which reports the poll behind this sample contained. Absent before the first poll. */
+  measured?: { pair: boolean; video: boolean };
   ingressFrames: number;
   forwardedPackets: number;
   ingressPackets: number;

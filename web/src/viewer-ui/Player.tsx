@@ -82,11 +82,30 @@ export function isDegraded(q: Quality | null | undefined, moving = true) {
 export const WEAK_HOLD_MS = 3000;
 
 /**
- * Stats arrive twice a second. Without a new measurement for this long the
- * last one is history: sampling stalled, and an old loss spike must not grow
- * into a warning by simply staying on the screen.
+ * Stats arrive twice a second. A gap this long between measurements breaks a
+ * run of weak ones: sampling stalled, and what was seen before the gap is
+ * history, not evidence about now.
  */
 export const STALE_SAMPLE_MS = 2000;
+
+/** A run of consecutive weak measurements, by their own timestamps. */
+export interface WeakRun {
+  since: number | null;
+  last: number | null;
+  held: boolean;
+}
+export const NO_WEAK_RUN: WeakRun = { since: null, last: null, held: false };
+
+/**
+ * Fold one new measurement into the run. The warning is earned only by weak
+ * measurements whose timestamps span WEAK_HOLD_MS with no gap of
+ * STALE_SAMPLE_MS between them; a good or unknown one ends the run.
+ */
+export function weakRun(run: WeakRun, at: number, weak: boolean): WeakRun {
+  if (!weak) return { ...NO_WEAK_RUN, last: at };
+  const since = run.since === null || run.last === null || at - run.last >= STALE_SAMPLE_MS ? at : run.since;
+  return { since, last: at, held: at - since >= WEAK_HOLD_MS };
+}
 
 export type PlayerState = "live" | "paused" | "reconnecting";
 
@@ -233,22 +252,34 @@ export function Player({ stream, state, reconnect = null, hasAudio = false, qual
   const [fsSupported, setFsSupported] = useState(false);
   const wake = useWakeLock(state === "live");
   const moving = state === "live";
-  // Fresh while measurements keep arriving; each new one restarts the clock.
+  // Measurements with a timestamp earn the warning by their own clock (weakRun).
   const sampledAt = quality?.at ?? null;
-  const [stale, setStale] = useState(false);
+  const weakNow = isDegraded(quality, moving);
+  const run = useRef<WeakRun>(NO_WEAK_RUN);
+  const [runHeld, setRunHeld] = useState(false);
   useEffect(() => {
-    setStale(false);
-    if (sampledAt === null) return;
-    const t = setTimeout(() => setStale(true), STALE_SAMPLE_MS);
+    if (sampledAt === null) {
+      run.current = NO_WEAK_RUN;
+      return setRunHeld(false);
+    }
+    if (sampledAt !== run.current.last) run.current = weakRun(run.current, sampledAt, weakNow);
+    setRunHeld(run.current.held);
+    // No newer measurement by the time this one is stale: the run is over.
+    const t = setTimeout(() => {
+      run.current = NO_WEAK_RUN;
+      setRunHeld(false);
+    }, Math.max(0, sampledAt + STALE_SAMPLE_MS - Date.now()));
     return () => clearTimeout(t);
-  }, [sampledAt]);
-  const weak = !stale && isDegraded(quality, moving);
-  const [weakHeld, setWeakHeld] = useState(false);
+  }, [sampledAt, weakNow]);
+  // Callers without timestamps (the gallery, fixed fixtures) hold by arrival time instead.
+  const untimedWeak = sampledAt === null && weakNow;
+  const [untimedHeld, setUntimedHeld] = useState(false);
   useEffect(() => {
-    if (!weak) return setWeakHeld(false);
-    const t = setTimeout(() => setWeakHeld(true), WEAK_HOLD_MS);
+    if (!untimedWeak) return setUntimedHeld(false);
+    const t = setTimeout(() => setUntimedHeld(true), WEAK_HOLD_MS);
     return () => clearTimeout(t);
-  }, [weak]);
+  }, [untimedWeak]);
+  const weakHeld = runHeld || untimedHeld;
   const degraded = weakHeld || state === "reconnecting";
 
   const setVideo = useCallback(

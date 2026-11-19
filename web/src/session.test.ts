@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { E2EEError } from "@passstream/e2ee";
 import { Session, unmeasuredCleared } from "./session";
 import { viewerHud } from "./hud/stats";
-import { isDegraded } from "./viewer-ui/Player";
+import { isDegraded, qualityBars } from "./viewer-ui/Player";
 
 class Socket {
  static OPEN=1;
@@ -87,26 +87,41 @@ describe("a poll carries only what it measured", () => {
   const spike = { rtt: 12, path: "UDP", loss: 14, bitrate: 70_000, fps: 13 };
 
   it("drops loss, rate and frame rate when the video report is missing", () => {
-    expect(unmeasuredCleared(spike, { pair: true, video: false })).toEqual({ rtt: 12, path: "UDP", loss: 0, bitrate: 0, fps: 0 });
+    expect(unmeasuredCleared(spike, { pair: true, video: false })).toEqual({ rtt: 12, path: "UDP", loss: 0, bitrate: 0, fps: 0, measured: { pair: true, video: false } });
   });
 
   it("reports no path when no pair is selected, so an old round trip isn't shown as current", () => {
     const next = unmeasuredCleared(spike, { pair: false, video: true });
-    expect(next).toEqual({ rtt: 12, path: "—", loss: 14, bitrate: 70_000, fps: 13 });
+    expect(next).toEqual({ rtt: 12, path: "—", loss: 14, bitrate: 70_000, fps: 13, measured: { pair: false, video: true } });
     const hud = viewerHud({ sample: { ...next, timestamp: 2000 }, layer: { rendition: null, temporal: null, temporalMax: null }, freezes: 0, g2g: null, e2ee: { epoch: null, failures: 0, top: null } });
     expect(hud.rtt_ms).toBeNull();
   });
 
   it("keeps a complete measurement as it is", () => {
-    expect(unmeasuredCleared(spike, { pair: true, video: true })).toEqual(spike);
+    expect(unmeasuredCleared(spike, { pair: true, video: true })).toEqual({ ...spike, measured: { pair: true, video: true } });
   });
 
   it("so one weak sample followed by polls without its report doesn't read as weak", () => {
     // What the viewer shows for the cleared sample: no loss, and no frame-rate verdict.
     const next = unmeasuredCleared(spike, { pair: true, video: false });
     const hud = viewerHud({ sample: { ...next, timestamp: 2000 }, layer: { rendition: null, temporal: null, temporalMax: null }, freezes: 0, g2g: null, e2ee: { epoch: null, failures: 0, top: null } });
-    expect(hud.loss_pct).toBe(0);
+    expect(hud.loss_pct).toBeNull();
     expect(hud.fps).toBeNull();
     expect(isDegraded({ ...hud, layer: null })).toBe(false);
+  });
+
+  const hudOf = (sample: ReturnType<typeof unmeasuredCleared<typeof spike & { measured?: { pair: boolean; video: boolean } }>>) =>
+    viewerHud({ sample: { ...sample, timestamp: 2000 }, layer: { rendition: null, temporal: null, temporalMax: null }, freezes: 0, g2g: null, e2ee: { epoch: null, failures: 0, top: null } });
+
+  it("a poll with neither report is no signal data, not a perfect connection", () => {
+    const hud = hudOf(unmeasuredCleared(spike, { pair: false, video: false }));
+    expect([hud.rtt_ms, hud.loss_pct]).toEqual([null, null]);
+    expect(qualityBars({ ...hud, layer: null })).toBe(-1);
+  });
+
+  it("a measured 0% loss is still shown as zero", () => {
+    const hud = hudOf(unmeasuredCleared({ ...spike, loss: 0 }, { pair: true, video: true }));
+    expect(hud.loss_pct).toBe(0);
+    expect(qualityBars({ ...hud, layer: null })).toBe(4);
   });
 });
