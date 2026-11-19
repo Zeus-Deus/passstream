@@ -5,6 +5,12 @@ import { PublishPreview } from "./publish-confirmation";
 import type { PublishPrompt } from "./local-channel";
 import { registerPublishReceiver } from "./publish-approval";
 
+// jsdom has no dialog API. The sender browser test exercises modal focus.
+Object.assign(HTMLDialogElement.prototype, {
+  showModal(this: HTMLDialogElement) { this.open = true; },
+  close(this: HTMLDialogElement) { this.open = false; },
+});
+
 afterEach(cleanup);
 const request: PublishPrompt={request_id:"test",kind:"snapshot",service:"passfile",destination:"https://files.example:8443",bytes:2048,duration_ms:0,preview:"aGVsbG8=",expires_at:Date.now()+30000};
 it("shows the exact destination, frozen preview and shareable-link warning before any action",()=>{

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { PublishConfirmation } from "./publish-confirmation";
 import type { LocalChannel } from "./local-channel";
 
@@ -52,7 +52,17 @@ export function OwnerActions({ channel, capturing }: { channel: LocalChannel; ca
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [link, setLink] = useState("");
-  const run = async (op: string, args: Record<string, unknown> = {}) => {
+  const publishTrigger = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => {
+    if (busy) return;
+    // The dialog can close while its trigger is still disabled by the status poll.
+    // Keep any focus the user moved elsewhere while waiting.
+    if (document.activeElement === document.body) publishTrigger.current?.focus();
+    publishTrigger.current = null;
+  }, [busy]);
+
+  const run = async (op: string, args: Record<string, unknown>, trigger: HTMLButtonElement) => {
+    publishTrigger.current = op === "publish" ? trigger : null;
     setBusy(true); setMessage(""); setLink("");
     try {
       const r = await channel.ownerAction(op, args);
@@ -81,7 +91,7 @@ export function OwnerActions({ channel, capturing }: { channel: LocalChannel; ca
           {!capturing && <p className="text-sm text-ink-mute">Available once you're sharing.</p>}
           <div className="flex flex-wrap gap-2">
             {ACTIONS.map(([label, op, args]) => (
-              <button type="button" key={label} disabled={busy || !capturing} className="btn" onClick={() => void run(op, args)}>
+              <button type="button" key={label} disabled={busy || !capturing} className="btn" onClick={(event) => void run(op, args, event.currentTarget)}>
                 {label}
               </button>
             ))}
