@@ -118,10 +118,13 @@ export class Redactor {
     this.worker.postMessage({ type: "reset" } satisfies RedactIn);
   }
   stop() {
-    this.worker.postMessage({ type: "stop" } satisfies RedactIn);
-    this.track.stop();
+    if (!live.delete(this)) return;
+    // A sender can retain the generator if replaceTrack fails.
+    this.track.enabled = false;
     this.input.stop();
-    live.delete(this);
+    this.track.stop();
+    this.listeners.clear();
+    this.worker.postMessage({ type: "stop" } satisfies RedactIn);
     // The recognition worker stays for the next capture.
     setTimeout(() => this.worker.terminate(), 100);
   }

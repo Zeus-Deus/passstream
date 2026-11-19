@@ -993,8 +993,10 @@ export class SenderCore {
   private beginTeardown(reason: string) {
     this.phase = "ended";
     this.endedReason = reason;
-    this.finalizing?.abort();
     this.capture?.getTracks().forEach((t) => { t.enabled = false; });
+    this.redactor?.stop();
+    this.redactor = undefined;
+    this.finalizing?.abort();
     this.features?.stop();
   }
 
@@ -1016,7 +1018,6 @@ export class SenderCore {
     stopTestSource(ended);
     ended.getTracks().forEach((t) => t.stop());
     this.capture?.getTracks().forEach((t) => t.stop());
-    this.redactor?.stop();
     if (this.capture) stopTestSource(this.capture);
     if (this.paused) stopTestSource(this.paused);
     if (this.blocked) stopTestSource(this.blocked);
@@ -1035,7 +1036,6 @@ export class SenderCore {
     void this.session?.setOutgoing(null);
     this.session?.stop();
     this.capture?.getTracks().forEach((t) => t.stop());
-    this.redactor?.stop();
     this.timers.forEach(clearInterval);
     this.annotations?.stop();
     await this.host?.close().catch(() => undefined);

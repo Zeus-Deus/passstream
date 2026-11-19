@@ -1928,6 +1928,72 @@ try {
     }
   }
 
+  for (const refused of ["main", "thumbnail", "both"]) {
+    await test(`safe_mode_ended_slate_refused_by_${refused}`, async () => {
+      const { page } = await share([], { source: "sensitive", safe: true, tone: 0 });
+      return page.evaluate(async (refused) => {
+        const sender = window.passstreamSender, session = sender.session;
+        const raw = sender.capture.getVideoTracks()[0];
+        const { input, track: output } = sender.redactor;
+        const senders = { main: session.videoSender, thumbnail: session.thumbnailSender };
+        const wasLive = input.readyState === "live" && input.enabled && output.enabled &&
+          Object.values(senders).every((s) => s.track === output);
+        const rejects = (name) => refused === "both" || refused === name;
+        for (const [name, s] of Object.entries(senders)) {
+          if (rejects(name)) s.replaceTrack = async () => { throw new DOMException("Slate refused", "InvalidStateError"); };
+        }
+
+        // Sample the real generated frames. Green is drawn on the capture only after end().
+        const pixel = new OffscreenCanvas(1, 1).getContext("2d", { willReadFrequently: true });
+        const reader = new MediaStreamTrackProcessor({ track: output }).readable.getReader();
+        const first = await reader.read();
+        first.value.close();
+        let greenFrames = 0;
+        const sample = async () => {
+          for (;;) {
+            const { value: frame, done } = await reader.read();
+            if (done) return;
+            pixel.drawImage(frame, 8, 8, 1, 1, 0, 0, 1, 1);
+            frame.close();
+            const [r, g, b] = pixel.getImageData(0, 0, 1, 1).data;
+            if (g > 200 && r < 50 && b < 50) greenFrames++;
+          }
+        };
+        const sampled = sample();
+        const reporting = Promise.withResolvers(), ack = Promise.withResolvers();
+        const channel = sender.cfg.channel, sendState = channel.sendState.bind(channel);
+        channel.sendState = async (...args) => {
+          channel.sendState = sendState;
+          const saved = await sendState(...args);
+          reporting.resolve();
+          await ack.promise;
+          return saved;
+        };
+        const stopping = sender.end("stopped", false);
+        const cutOff = !raw.enabled && !output.enabled && output.readyState === "ended" && input.readyState === "ended";
+        const ctx = raw.canvas.getContext("2d");
+        const marker = setInterval(() => {
+          ctx.fillStyle = "#00ff00";
+          ctx.fillRect(0, 0, 32, 32);
+          raw.requestFrame();
+        }, 40);
+        await reporting.promise;
+        const slate = session.outgoing;
+        const tracksMatch = !!slate && slate !== raw && slate !== output &&
+          Object.entries(senders).every(([name, s]) => s.track === (rejects(name) ? output : slate));
+        await new Promise((r) => setTimeout(r, 300));
+        const beforeAck = greenFrames;
+        ack.resolve();
+        await stopping;
+        clearInterval(marker);
+        await reader.cancel();
+        await sampled;
+        return { pass: wasLive && cutOff && tracksMatch && greenFrames === 0,
+          wasLive, cutOff, tracksMatch, beforeAck, duringGrace: greenFrames - beforeAck };
+      }, refused);
+    });
+  }
+
   for (const late of ["resume", "failed_swap"]) {
     await test(`safe_mode_ended_slate_survives_late_${late}`, async () => {
       const { page } = await share([], { source: "sensitive", tone: 0 });
