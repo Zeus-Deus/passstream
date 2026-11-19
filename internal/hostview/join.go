@@ -1,6 +1,9 @@
 package hostview
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 const WindowMS int64 = 300000
 
@@ -147,6 +150,12 @@ func Join(in JoinInput, mem JoinMemory) (ViewerList, JoinMemory, []HistoryEntry)
 	old := map[string]MemoryRow{}
 	for _, m := range mem.Rows {
 		old[m.RowID] = m
+		// A joining connection that the sender has since admitted (or that is
+		// knocking) now lives on that row. Bringing back its old joining row
+		// would list the same person a second time, as a viewer who left.
+		if conn, joined := strings.CutPrefix(m.RowID, "c:"); joined && (attached[conn] || len(claims[conn]) > 0) {
+			continue
+		}
 		if rows[m.RowID] == nil {
 			v := m.Snapshot
 			v.Status = "left"

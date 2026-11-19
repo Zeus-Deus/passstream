@@ -427,11 +427,14 @@ func TestPaddingFlightUsesProvenRateAndStandingHeadroom(t *testing.T) {
 	p.probeRate.Store(256_000)
 	p.probeRateAt.Store(now.UnixNano())
 	p.minimumFeedbackRTT.Store(int64(80 * time.Millisecond))
-	p.departedBytes.Store(12_000)
+	// Transit and one feedback interval at the proof, plus one more interval
+	// of the step above it, is 18.5KB. The offered ceiling would allow 412KB.
+	p.probeCeiling.Store(10_000_000)
+	p.departedBytes.Store(24_000)
 	if !p.flightLimited(10_000_000, true) {
 		t.Fatal("padding borrowed an unproven offered ceiling")
 	}
-	p.departedBytes.Store(4_000)
+	p.departedBytes.Store(8_000)
 	if p.flightLimited(10_000_000, true) {
 		t.Fatal("padding cannot exercise a proven flight window")
 	}
@@ -443,6 +446,73 @@ func TestPaddingFlightUsesProvenRateAndStandingHeadroom(t *testing.T) {
 	p.departedBytes.Store(0)
 	if !p.flightLimited(10_000_000, true) {
 		t.Fatal("padding continued at the standing cap")
+	}
+}
+
+// One flight window is released per feedback interval. With feedback at
+// libwebrtc's longest interval, a trial must still be able to deliver the rate
+// it is asked to prove; otherwise proof can never rise from the low rendition.
+func TestPaddingFlightCanDeliverItsTrialAtTheLongestFeedbackInterval(t *testing.T) {
+	const feedback = 250 * time.Millisecond
+	for _, c := range []struct{ proof, key int64 }{{1_571_371, 203_299}, {1_308_800, 203_296}, {900_000, 203_296}} {
+		ceiling := nativeTrialRate(0, c.key)
+		goal := nativeRefreshRate(c.key)
+		p := &Pacer{}
+		p.probeRate.Store(c.proof)
+		p.probeRateAt.Store(time.Now().UnixNano())
+		p.probeCeiling.Store(ceiling)
+		p.minimumFeedbackRTT.Store(int64(time.Millisecond))
+		// The largest flight the limiter admits, found by offering one more MTU at a time.
+		window := int64(0)
+		for !p.flightLimited(ceiling, true) {
+			window += wireMTU
+			p.departedBytes.Store(window)
+		}
+		if delivered := window * 8 * int64(time.Second) / int64(feedback); delivered < goal {
+			t.Errorf("proof %d: one flight per feedback delivers %d, below the %d a %d-byte key needs", c.proof, delivered, goal, c.key)
+		}
+	}
+	if got := paddingFlightRate(256_000, 10_000_000); got != 512_000 {
+		t.Errorf("a distant ceiling was borrowed: %d", got)
+	}
+	if got := paddingFlightRate(1_600_000, 1_789_000); got != 1_789_000 {
+		t.Errorf("a trial may fly what it offers: %d", got)
+	}
+	if got := paddingFlightRate(2_000_000, 1_789_000); got != 2_000_000 {
+		t.Errorf("an offer below the proof must not shrink the proven window: %d", got)
+	}
+}
+
+// A path with a resident queue and slow feedback: 360ms round trip against an
+// 80ms baseline, 20ms left before the standing-delay cap. The step above the
+// proof must not scale the bytes already in transit; it may add only what the
+// proven rate drains in the headroom that is left.
+func TestPaddingFlightStepIsBoundedByRemainingDelayOnACongestedPath(t *testing.T) {
+	const proof, offered = 256_000, 512_000
+	p := &Pacer{}
+	p.probeRate.Store(proof)
+	p.probeRateAt.Store(time.Now().UnixNano())
+	p.probeCeiling.Store(offered)
+	p.minimumFeedbackRTT.Store(int64(80 * time.Millisecond))
+	p.rtt.Store(int64(360 * time.Millisecond))
+	p.networkExcess.Store(int64(standingDelayLimit - 20*time.Millisecond))
+	// At the proven rate alone: 256kbit/s over 360ms transit + 20ms = 12,160 bytes.
+	const provenOnly = proof * 380 / 1000 / 8
+	p.departedBytes.Store(provenOnly - 1)
+	if p.flightLimited(offered, true) {
+		t.Fatal("the proven flight window was withheld")
+	}
+	// 20ms of headroom at the proven rate is 640 bytes: the whole speculative step.
+	p.departedBytes.Store(provenOnly + 640)
+	if !p.flightLimited(offered, true) {
+		t.Fatal("the step above proof exceeded what the remaining delay budget drains")
+	}
+	if got := paddingFlightLimit(proof, offered, 360*time.Millisecond, 20*time.Millisecond); got != provenOnly+640 {
+		t.Fatalf("limit %d, want %d", got, provenOnly+640)
+	}
+	// The same path with the queue gone keeps the wide window and the full step.
+	if clear := paddingFlightLimit(proof, offered, 80*time.Millisecond, standingDelayLimit); clear != (proof*330/1000+proof*250/1000)/8 {
+		t.Fatalf("clear-path limit %d", clear)
 	}
 }
 

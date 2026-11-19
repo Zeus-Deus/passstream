@@ -727,6 +727,9 @@ try {
     secrets.push({ pin: s.pin, link: s.link });
     for (let i = 0; i < 60 && cli(["frame", "--json"]).json?.status !== "frame"; i++) await sleep(100);
     const before = uploadRequests.length;
+    // Recording and publishing are folded away until asked for.
+    const disclosure = s.page.getByText("Record and publish", { exact: true });
+    await disclosure.click();
     const controls = s.page.getByRole("region", { name: "Owner captures" });
     const snapshot = controls.getByRole("button", { name: "Snapshot → PassFile", exact: true, disabled: false });
     const dialog = s.page.getByRole("dialog", { name: "Confirm publishing" });
@@ -745,6 +748,8 @@ try {
     await s.page.keyboard.press("Enter");
     await dialog.getByRole("button", { name: "Confirm upload", exact: true }).click();
     await controls.getByRole("link", { name: "Open published capture" }).waitFor();
+    await disclosure.click();
+    await controls.waitFor({ state: "hidden" });
     const portal = await browser.newPage(); watch(portal, "local-owner");
     await portal.goto(`http://127.0.0.1:${daemonPort}/owner?stream_id=${s.id}`);
     const disabled = await portal.getByRole("button", { name: "Snapshot → PassPage", exact: true }).isDisabled();

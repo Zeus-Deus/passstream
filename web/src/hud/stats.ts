@@ -166,6 +166,8 @@ export interface SessionSample {
   path: string;
   fps: number;
   timestamp: number;
+  /** Which reports the poll contained; absent means all of them. */
+  measured?: { pair: boolean; video: boolean };
 }
 
 export interface ViewerHud {
@@ -193,7 +195,8 @@ export function viewerHud(i: { sample: SessionSample | null; layer: MediaLayer; 
   return {
     // RTT and path come from the same selected candidate pair: with a pair, 0 is a real (sub-millisecond) RTT.
     rtt_ms: path === null || num(q?.rtt, (v) => v >= 0) === null ? null : Math.round(q!.rtt),
-    loss_pct: num(q?.loss, (v) => v >= 0 && v <= 100),
+    // Without the video report there is no loss reading: unknown, not 0%.
+    loss_pct: q?.measured?.video === false ? null : num(q?.loss, (v) => v >= 0 && v <= 100),
     bitrate_kbps: bitrate === null ? null : Math.round(bitrate / 1000),
     fps: num(q?.fps, (v) => v > 0) === null ? null : Math.round(q!.fps),
     path,
