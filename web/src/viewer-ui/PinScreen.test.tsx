@@ -33,13 +33,17 @@ describe("PinScreen (digits)", () => {
     expect(screen.getByTestId("pin-boxes").firstElementChild!.children).toHaveLength(4);
   });
 
-  it("auto-submits once on the last digit, with the optional name", () => {
+  it("lets viewers enter a name after the PIN, then joins once on submit", () => {
     const onSubmit = vi.fn();
     render(<PinScreen policy={{ kind: "digits", length: 4 }} onSubmit={onSubmit} storage={memory()} />);
-    fireEvent.change(screen.getByTestId("name-input"), { target: { value: "  Ana " } });
-    for (const v of ["4", "48", "482"]) fireEvent.change(pin(), { target: { value: v } });
+    fireEvent.change(pin(), { target: { value: "482" } });
+    expect(screen.getByRole("button", { name: "Join" })).toBeDisabled();
     expect(onSubmit).not.toHaveBeenCalled();
     fireEvent.change(pin(), { target: { value: "4821" } });
+    expect(screen.getByRole("button", { name: "Join" })).toBeEnabled();
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByTestId("name-input"), { target: { value: "  Ana " } });
+    fireEvent.submit(pin().form!);
     expect(onSubmit).toHaveBeenCalledExactlyOnceWith("4821", "Ana");
     fireEvent.submit(pin().form!);
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -52,6 +56,8 @@ describe("PinScreen (digits)", () => {
     expect(pin().value).toBe("");
     fireEvent.change(pin(), { target: { value: "48 21-99" } });
     expect(pin().value).toBe("4821");
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.submit(pin().form!);
     expect(onSubmit).toHaveBeenCalledWith("4821", "");
   });
 
@@ -60,8 +66,10 @@ describe("PinScreen (digits)", () => {
     render(<PinScreen policy={{ kind: "digits", length: 6 }} onSubmit={onSubmit} storage={memory()} />);
     expect(screen.getByTestId("pin-boxes").firstElementChild!.children).toHaveLength(6);
     fireEvent.change(pin(), { target: { value: "4821" } });
+    fireEvent.submit(pin().form!);
     expect(onSubmit).not.toHaveBeenCalled();
     fireEvent.change(pin(), { target: { value: "482193" } });
+    fireEvent.submit(pin().form!);
     expect(onSubmit).toHaveBeenCalledWith("482193", "");
   });
 
@@ -74,6 +82,7 @@ describe("PinScreen (digits)", () => {
     expect(screen.getByTestId("pin-hint")).toHaveTextContent("2 tries left");
     // The same digits again are a new try.
     fireEvent.change(pin(), { target: { value: "4821" } });
+    fireEvent.submit(pin().form!);
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
@@ -115,6 +124,7 @@ describe("PinScreen (digits)", () => {
     const onSubmit = vi.fn();
     const { rerender } = render(<PinScreen policy={{ kind: "digits", length: 4 }} onSubmit={onSubmit} storage={memory()} />);
     fireEvent.change(pin(), { target: { value: "4821" } });
+    fireEvent.submit(pin().form!);
     rerender(<PinScreen policy={{ kind: "digits", length: 4 }} onSubmit={onSubmit} busy storage={memory()} />);
     expect(screen.getByRole("button", { name: "Checking…" })).toBeDisabled();
     expect(screen.getByTestId("pin-hint")).toHaveTextContent("Checking with the host");
@@ -129,6 +139,7 @@ describe("PinScreen (digits)", () => {
     expect(screen.getByTestId("name-input")).toHaveValue("Bo");
     fireEvent.change(screen.getByTestId("name-input"), { target: { value: "Bo K" } });
     fireEvent.change(pin(), { target: { value: "1234" } });
+    fireEvent.submit(pin().form!);
     expect(storage.m.get(NAME_KEY)).toBe("Bo K");
   });
 
@@ -147,6 +158,7 @@ describe("PinScreen (digits)", () => {
     // removeItem runs for an empty name, setItem for a non-empty one.
     fireEvent.change(screen.getByTestId("name-input"), { target: { value: broken === "removeItem" ? "" : "Ana" } });
     fireEvent.change(pin(), { target: { value: "1234" } });
+    fireEvent.submit(pin().form!);
     expect(onSubmit).toHaveBeenCalledExactlyOnceWith("1234", broken === "removeItem" ? "" : "Ana");
   });
 
